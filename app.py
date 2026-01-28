@@ -285,19 +285,48 @@ def main():
                         subset = gdf_search[gdf_search[sel_col].astype(str) == sel_val]
                         if not subset.empty:
                             geom = subset.geometry.iloc[0]
-                            # Calcular centroide y bounds
-                            bounds = geom.bounds # minx, miny, maxx, maxy
-                            center_lat = (bounds[1] + bounds[3]) / 2
-                            center_lon = (bounds[0] + bounds[2]) / 2
+                            # Bounds: minx, miny, maxx, maxy
+                            minx, miny, maxx, maxy = geom.bounds
                             
-                            st.session_state['map_center'] = [center_lat, center_lon]
-                            st.session_state['map_zoom'] = 14 # Zoom cercano
+                            # Folium fit_bounds espera [[lat_min, lon_min], [lat_max, lon_max]]
+                            # que corresponde a [[miny, minx], [maxy, maxx]]
+                            bounds_to_fit = [[miny, minx], [maxy, maxx]]
+                            
+                            st.session_state['map_active_bounds'] = bounds_to_fit
                             st.session_state['map_key'] += 1 # Forzar recarga mapa
+                            
+                            # Opcional: guardar geometría resaltada temporalmente
+                            st.session_state['search_highlight'] = geom.__geo_interface__
+                            
                             st.rerun()
         else:
             st.caption("Sube shapefiles para buscar objetos.")
+            
+        # C. Gestión de Estilos (NUEVO)
+        st.divider()
+        with st.expander("🎨 Estilos y Colores", expanded=False):
+            st.markdown("#### Capa de Trabajo (Dibujo)")
+            # Color default azul
+            work_color = st.color_picker("Color Elementos", "#2563eb", key="picker_work")
+            st.session_state['style_work_color'] = work_color
+            
+            st.divider()
+            st.markdown("#### Capas de Referencia")
+            if st.session_state['ref_layers']:
+                for name, layer in st.session_state['ref_layers'].items():
+                    if layer['type'] == 'vector':
+                        # Default gray
+                        current_c = layer.get('color', '#555555')
+                        new_c = st.color_picker(f"Color: {name}", current_c, key=f"picker_{name}")
+                        if new_c != current_c:
+                            st.session_state['ref_layers'][name]['color'] = new_c
+                            st.session_state['map_key'] += 1 # Forzar recarga si cambia color
+                            st.rerun()
+            else:
+                st.caption("No hay capas de referencia.")
 
-        # C. Archivo de Trabajo y Tablas (Código existente, condensado visualmente)
+
+        # D. Archivo de Trabajo y Tablas (Código existente, condensado visualmente)
         st.divider()
         with st.expander("💾 Configuración de Guardado"):
             default_path = os.path.join(os.getcwd(), "mis_dibujos.geojson")
@@ -333,112 +362,143 @@ def main():
 
 
     # --- ZONA PRINCIPAL ---
-    col_map, col_table = st.columns([2, 1])
+    # Layout: Columna Izq (Mapa) - Columna Der (Tabla/Edición)
+    c_map, c_data = st.columns([65, 35]) # 65% Mapa, 35% Tabla
 
     if 'Seleccionar' not in st.session_state['work_gdf'].columns:
         st.session_state['work_gdf'].insert(0, 'Seleccionar', False)
     
-    st.subheader("🌍 Vista de Mapa")
-    
-    # Usar estado para centro/zoom
-    m = folium.Map(
-        location=st.session_state['map_center'], 
-        zoom_start=st.session_state['map_zoom'], 
-        tiles="CartoDB positron"
-    )
-    
-    st.markdown("""<style>.leaflet-div-icon { background: #fff; border: 1px solid #666; border-radius: 50%; }</style>""", unsafe_allow_html=True)
-    
-    # RENDERIZAR REFERENCIAS (DESDE SESSION STATE)
-    for name, layer in st.session_state['ref_layers'].items():
-        if layer['type'] == 'vector':
-            # Filtrar columnas válidas para Tooltip (excluir geometry y tipos raros)
-            valid_tooltip_cols = [c for c in layer['data'].columns if c != 'geometry' and c != 'style']
-            # Tomar máximo 3
-            tooltip_fields = valid_tooltip_cols[:3]
-            
-            folium.GeoJson(
-                layer['data'],
-                name=f"Ref: {name}",
-                style_function=lambda x: {'color': '#555', 'weight': 1, 'fillOpacity': 0.1},
-                tooltip=folium.GeoJsonTooltip(fields=tooltip_fields) if tooltip_fields else None
-            ).add_to(m)
-        elif layer['type'] == 'raster':
-            # ImageOverlay
-            folium.raster_layers.ImageOverlay(
-                image=layer['data'],
-                bounds=layer['bounds'],
-                opacity=0.6,
-                name=f"Img: {name}"
-            ).add_to(m)
-
-    # Capa de Trabajo
-    wgdf = st.session_state['work_gdf']
-    if not wgdf.empty:
-        st.session_state['work_gdf']['Seleccionar'] = st.session_state['work_gdf']['Seleccionar'].astype(bool)
-        selected_mask = wgdf['Seleccionar']
-        gdf_selected = wgdf[selected_mask]
-        gdf_normal = wgdf[~selected_mask]
+    with c_map:
+        st.subheader("🌍 Mapa")
         
-        if not gdf_normal.empty:
-            folium.GeoJson(
-                gdf_normal.drop(columns=['Seleccionar']), name="Datos",
-                style_function=lambda x: {'color': '#2563eb', 'weight': 3, 'fillOpacity': 0.4},
-                marker=folium.CircleMarker(radius=4, fill_color='#2563eb', fill_opacity=0.6, color='white', weight=1)
-            ).add_to(m)
-        if not gdf_selected.empty:
-            folium.GeoJson(
-                gdf_selected.drop(columns=['Seleccionar']), name="Seleccionados",
-                style_function=lambda x: {'color': '#ef4444', 'weight': 5, 'fillOpacity': 0.7},
-                marker=folium.CircleMarker(radius=6, fill_color='#ef4444', fill_opacity=0.9, color='black', weight=2)
-            ).add_to(m)
-
-    draw = Draw(
-        export=False, position='topleft',
-        draw_options={'polyline': True, 'polygon': True, 'rectangle': True, 'circle': False, 'marker': False, 'circlemarker': True},
-        edit_options={'edit': False, 'remove': False}
-    )
-    draw.add_to(m)
-    
-    folium.LayerControl().add_to(m)
-    
-    output = st_folium(m, width="100%", height=500, key=f"map_{st.session_state['map_key']}")
-
-    # LOGIN INCORPORACIÓN
-    if output and "all_drawings" in output:
-        drawings = output["all_drawings"]
-        features = []
-        if isinstance(drawings, list): features = drawings
-        elif isinstance(drawings, dict) and "features" in drawings: features = drawings["features"]
-        
-        if features:
-            st.info(f"Has dibujado {len(features)} nuevos elementos.")
-            if st.button("📥 Incorporar", type="primary"):
-                new_gdf = gpd.GeoDataFrame.from_features(features, crs="EPSG:4326")
-                for col in st.session_state['work_gdf'].columns:
-                    if col not in new_gdf.columns and col != 'geometry':
-                         new_gdf[col] = False if col == 'Seleccionar' else None
-                st.session_state['work_gdf'] = pd.concat([st.session_state['work_gdf'], new_gdf], ignore_index=True)
-                st.session_state['map_key'] += 1
-                st.rerun()
-
-    # TABLA
-    st.divider()
-    if not st.session_state['work_gdf'].empty:
-        cols = ['Seleccionar'] + [c for c in st.session_state['work_gdf'].columns if c != 'Seleccionar' and c != 'geometry']
-        edited_df = st.data_editor(
-            st.session_state['work_gdf'][cols],
-            num_rows="dynamic", use_container_width=True, key="data_editor",
-            column_config={"Seleccionar": st.column_config.CheckboxColumn("Highlight", default=False)}
+        # Crear mapa
+        m = folium.Map(
+            location=st.session_state.get('map_center', [-33.4489, -70.6693]), 
+            zoom_start=st.session_state.get('map_zoom', 10), 
+            tiles="CartoDB positron"
         )
-        if not edited_df.equals(st.session_state['work_gdf'][cols]):
-            try:
-                for col in edited_df.columns: st.session_state['work_gdf'][col] = edited_df[col]
-                # Check highlight toggle
-                if not edited_df['Seleccionar'].equals(st.session_state['work_gdf'][cols]['Seleccionar']):
-                     st.rerun()
-            except: pass
-    else: st.info("Tabla vacía.")
+        
+        # Aplicar Zoom
+        if 'map_active_bounds' in st.session_state:
+            m.fit_bounds(st.session_state['map_active_bounds'])
+            del st.session_state['map_active_bounds']
+
+        # Highlight Búsqueda
+        if 'search_highlight' in st.session_state:
+            folium.GeoJson(
+                st.session_state['search_highlight'],
+                name="Resultado Búsqueda",
+                style_function=lambda x: {'color': 'orange', 'weight': 4, 'fillOpacity': 0.0, 'dashArray': '5, 5'}
+            ).add_to(m)
+        
+        st.markdown("""<style>.leaflet-div-icon { background: #fff; border: 1px solid #666; border-radius: 50%; }</style>""", unsafe_allow_html=True)
+        
+        # RENDER REFERENCIAS
+        for name, layer in st.session_state['ref_layers'].items():
+            if layer['type'] == 'vector':
+                # Filtrar columnas válidas para Tooltip (excluir geometry y tipos raros)
+                valid_tooltip_cols = [c for c in layer['data'].columns if c != 'geometry' and c != 'style']
+                tooltip_fields = valid_tooltip_cols[:3]
+                
+                # Obtener color guardado o default
+                layer_color = layer.get('color', '#555555')
+                
+                folium.GeoJson(
+                    layer['data'],
+                    name=f"Ref: {name}",
+                    style_function=lambda x, col=layer_color: {'color': col, 'weight': 1, 'fillOpacity': 0.1},
+                    tooltip=folium.GeoJsonTooltip(fields=tooltip_fields) if tooltip_fields else None
+                ).add_to(m)
+            elif layer['type'] == 'raster':
+                folium.raster_layers.ImageOverlay(
+                    image=layer['data'], bounds=layer['bounds'], opacity=0.6, name=f"Img: {name}"
+                ).add_to(m)
+
+        # CAPA DE TRABAJO (Editable)
+        wgdf = st.session_state['work_gdf']
+        
+        # Color seleccionado para trabajo
+        w_color = st.session_state.get('style_work_color', '#2563eb')
+        
+        if not wgdf.empty:
+            st.session_state['work_gdf']['Seleccionar'] = st.session_state['work_gdf']['Seleccionar'].astype(bool)
+            selected_mask = wgdf['Seleccionar']
+            
+            # Normales (Usan color seleccionado)
+            if not wgdf[~selected_mask].empty:
+                folium.GeoJson(
+                    wgdf[~selected_mask].drop(columns=['Seleccionar']), name="Datos",
+                    style_function=lambda x: {'color': w_color, 'weight': 3, 'fillOpacity': 0.4},
+                    marker=folium.CircleMarker(radius=4, fill_color=w_color, fill_opacity=0.6, color='white', weight=1)
+                ).add_to(m)
+            # Seleccionados (Siempre rojos)
+            if not wgdf[selected_mask].empty:
+                folium.GeoJson(
+                    wgdf[selected_mask].drop(columns=['Seleccionar']), name="Seleccionados",
+                    style_function=lambda x: {'color': '#ef4444', 'weight': 5, 'fillOpacity': 0.7},
+                    marker=folium.CircleMarker(radius=6, fill_color='#ef4444', fill_opacity=0.9, color='black', weight=2)
+                ).add_to(m)
+
+        # Dibujo: Usar color seleccionado para la herramienta de dibujo tambien
+        draw = Draw(
+            export=False, position='topleft',
+            draw_options={
+                'polyline': {'shapeOptions': {'color': w_color}}, 
+                'polygon': {'shapeOptions': {'color': w_color}}, 
+                'rectangle': {'shapeOptions': {'color': w_color}}, 
+                'circle': False, 
+                'marker': False, 
+                'circlemarker': {'shapeOptions': {'color': w_color, 'radius': 4}}
+            },
+            edit_options={'edit': False, 'remove': False}
+        )
+        draw.add_to(m)
+        
+        # RENDER MAPA
+        output = st_folium(m, width="100%", height=600, key=f"map_{st.session_state['map_key']}")
+
+        # Logica Incorporación (Debajo del mapa para feedback inmediato)
+        if output and "all_drawings" in output:
+            drawings = output["all_drawings"]
+            features = []
+            if isinstance(drawings, list): features = drawings
+            elif isinstance(drawings, dict) and "features" in drawings: features = drawings["features"]
+            
+            if features:
+                st.warning(f"⚠️ Tienes {len(features)} elemento(s) sin guardar en el lienzo.")
+                if st.button("📥 Incorporar a Tabla", type="primary", use_container_width=True):
+                    new_gdf = gpd.GeoDataFrame.from_features(features, crs="EPSG:4326")
+                    for col in st.session_state['work_gdf'].columns:
+                        if col not in new_gdf.columns and col != 'geometry':
+                            new_gdf[col] = False if col == 'Seleccionar' else None
+                    st.session_state['work_gdf'] = pd.concat([st.session_state['work_gdf'], new_gdf], ignore_index=True)
+                    st.session_state['map_key'] += 1
+                    st.rerun()
+
+    with c_data:
+        st.subheader("📋 Tabla de Atributos")
+        st.caption("Edita aquí los datos de los objetos dibujados.")
+        
+        if not st.session_state['work_gdf'].empty:
+            cols = ['Seleccionar'] + [c for c in st.session_state['work_gdf'].columns if c != 'Seleccionar' and c != 'geometry']
+            
+            edited_df = st.data_editor(
+                st.session_state['work_gdf'][cols],
+                num_rows="dynamic", 
+                use_container_width=True, 
+                height=600, # Match map height roughly
+                key="data_editor",
+                column_config={"Seleccionar": st.column_config.CheckboxColumn("Ver", width="small")}
+            )
+            
+            if not edited_df.equals(st.session_state['work_gdf'][cols]):
+                try:
+                    for col in edited_df.columns: st.session_state['work_gdf'][col] = edited_df[col]
+                    if not edited_df['Seleccionar'].equals(st.session_state['work_gdf'][cols]['Seleccionar']):
+                         st.rerun()
+                except: pass
+        else:
+            st.info("La tabla está vacía. Dibuja en el mapa e incorpora objetos para comenzar.")
 
 if __name__ == "__main__":
     main()
