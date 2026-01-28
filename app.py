@@ -166,6 +166,15 @@ if files1 and files2:
                     gdf1 = gdf1.set_index(id_col)
                     gdf2 = gdf2.set_index(id_col)
                     
+                    # Validar duplicados en ID
+                    if not gdf1.index.is_unique:
+                        st.error(f"⚠️ Error: La columna '{id_col}' tiene valores duplicados en el Archivo 1. Para comparar por ID, estos deben ser únicos.")
+                        st.stop()
+                    
+                    if not gdf2.index.is_unique:
+                        st.error(f"⚠️ Error: La columna '{id_col}' tiene valores duplicados en el Archivo 2. Para comparar por ID, estos deben ser únicos.")
+                        st.stop()
+                    
                     ids1 = set(gdf1.index)
                     ids2 = set(gdf2.index)
                     
