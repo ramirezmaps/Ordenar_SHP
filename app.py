@@ -213,9 +213,10 @@ if files1 and files2:
 
                     st.success("Análisis completado")
                     
-                    tab_resumen, tab_detalles, tab_estructura, tab_grafico = st.tabs([
+                    tab_resumen, tab_detalles, tab_stats, tab_estructura, tab_grafico = st.tabs([
                         "📊 Resultados Clave", 
                         "📋 Detalle de Cambios",
+                        "📈 Estadísticas de Campos",
                         "🏗️ Estructura", 
                         "🌍 Mapa Avanzado"
                     ])
@@ -235,7 +236,7 @@ if files1 and files2:
                          st.bar_chart(chart_data.set_index("Categoría"))
 
                     with tab_detalles:
-                        st.subheader("1. Cambios en Atributos")
+                        st.subheader("1. Cambios en Atributos (Registro por Registro)")
                         if modified_attrs:
                             df_mod = pd.DataFrame(modified_attrs)
                             # Mover ID al principio
@@ -248,18 +249,61 @@ if files1 and files2:
                         st.divider()
 
                         c_new, c_del = st.columns(2)
+                        # ... (existing content for new/deleted)
                         with c_new:
                             st.subheader("2. Registros Nuevos (Solo en Archivo 2)")
                             if added_ids:
                                 df_added = gdf2.loc[list(added_ids)].reset_index()
                                 st.dataframe(df_added.drop(columns='geometry', errors='ignore').head(), use_container_width=True)
-                                st.caption(f"Total: {len(added_ids)}")
                         with c_del:
-                            st.subheader("3. Registros Eliminados (Solo en Archivo 1)")
-                            if removed_ids:
+                             st.subheader("3. Registros Eliminados (Solo en Archivo 1)")
+                             if removed_ids:
                                 df_removed = gdf1.loc[list(removed_ids)].reset_index()
                                 st.dataframe(df_removed.drop(columns='geometry', errors='ignore').head(), use_container_width=True)
-                                st.caption(f"Total: {len(removed_ids)}")
+
+                    with tab_stats:
+                        st.markdown("#### Comparación Estadística de Atributos")
+                        st.caption("Analizando columnas comunes para detectar cambios globales en los datos.")
+                        
+                        col_to_analyze = st.selectbox("Selecciona columna para ver detalle:", options=compare_cols)
+                        
+                        if col_to_analyze:
+                            s1 = gdf1[col_to_analyze]
+                            s2 = gdf2[col_to_analyze]
+                            
+                            is_numeric = pd.api.types.is_numeric_dtype(s1) and pd.api.types.is_numeric_dtype(s2)
+                            
+                            c_stat1, c_stat2 = st.columns(2)
+                            
+                            with c_stat1:
+                                st.info(f"📁 Archivo 1 ({file1.name if 'file1' in locals() else 'Ref'})")
+                                if is_numeric:
+                                    st.write(s1.describe())
+                                else:
+                                    st.write(f"**Valores Únicos:** {s1.nunique()}")
+                                    st.write("**Top 5 Frecuentes:**")
+                                    st.write(s1.value_counts().head())
+
+                            with c_stat2:
+                                st.success(f"📁 Archivo 2 ({file2.name if 'file2' in locals() else 'Comp'})")
+                                if is_numeric:
+                                    st.write(s2.describe())
+                                else:
+                                    st.write(f"**Valores Únicos:** {s2.nunique()}")
+                                    st.write("**Top 5 Frecuentes:**")
+                                    st.write(s2.value_counts().head())
+                            
+                            if is_numeric:
+                                st.markdown("##### Distribución")
+                                diff_val = s2.mean() - s1.mean()
+                                st.metric(f"Diferencia Promedio ({col_to_analyze})", f"{diff_val:.4f}", delta=diff_val)
+                                
+                                # Simple histogram comparison
+                                df_hist = pd.DataFrame({
+                                    'Archivo 1': s1,
+                                    'Archivo 2': s2
+                                })
+                                st.bar_chart(df_hist)
                                 
                     with tab_estructura:
                          # Reutilizar lógica existente pero dentro de la pestaña
