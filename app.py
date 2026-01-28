@@ -3,15 +3,17 @@ import geopandas as gpd
 import pandas as pd
 import tempfile
 import os
-import zipfile
 import shutil
 import folium
+import zipfile
 from streamlit_folium import st_folium
+from folium.plugins import Draw
+import glob
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
-    page_title="Shapefile Comparator Pro",
-    page_icon="🗺️",
+    page_title="Editor Geoespacial",
+    page_icon="✏️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -29,21 +31,25 @@ st.markdown("""
         color: #1e293b;
         font-weight: 700;
     }
-    .metric-card {
-        background-color: white;
-        padding: 20px;
-        border-radius: 10px;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-        text-align: center;
-    }
-    .stAlert {
-        border-radius: 8px;
+    /* Ajustes para maximizar el mapa */
+    iframe {
+        width: 100%;
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- FUNCIONES AUXILIARES ---
+# ... (Imports anteriores se mantienen arriba, agregamos estos)
+import rasterio
+from rasterio.warp import calculate_default_transform, reproject, Resampling
+import numpy as np
+from PIL import Image
+import fiona
 
+# Habilitar soporte para KML en Fiona (a veces desactivado por defecto)
+fiona.drvsupport.supported_drivers['KML'] = 'rw'
+fiona.drvsupport.supported_drivers['LIBKML'] = 'rw'
+
+# --- FUNCIONES AUXILIARES (RASTER) ---
 def save_uploaded_files(uploaded_files):
     """Guarda los archivos subidos (shp, shx, dbf, etc.) en una carpeta temporal."""
     if not uploaded_files:
@@ -51,7 +57,6 @@ def save_uploaded_files(uploaded_files):
     
     temp_dir = tempfile.mkdtemp()
     
-    shp_file = None
     saved_files = []
     
     for uploaded_file in uploaded_files:
@@ -59,371 +64,381 @@ def save_uploaded_files(uploaded_files):
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         saved_files.append(file_path)
-        if uploaded_file.name.lower().endswith(".shp"):
-            shp_file = file_path
-            
-    # Validación básica: advertir si faltan archivos críticos
-    extensions = [os.path.splitext(f)[1].lower() for f in saved_files]
-    if ".shp" not in extensions:
-        return None, temp_dir
-        
-    return shp_file, temp_dir
+    
+    # Retornamos el directorio temporal para buscar SHPs dentro
+    return None, temp_dir
 
-def load_data(shp_path):
-    """Carga el shapefile usando Geopandas."""
+
+def process_raster_upload(uploaded_file):
+    """Procesa una imagen georreferenciada: Reproyecta a 4326 y genera PNG + Bounds."""
     try:
-        gdf = gpd.read_file(shp_path)
-        return gdf
+        # Guardar archivo subido temporalmente
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{uploaded_file.name}") as tmp_src:
+            tmp_src.write(uploaded_file.getbuffer())
+            src_path = tmp_src.name
+
+        with rasterio.open(src_path) as src:
+            # Definir destino WGS84
+            dst_crs = 'EPSG:4326'
+            
+            # Calcular transformada para reproyección
+            transform, width, height = calculate_default_transform(
+                src.crs, dst_crs, src.width, src.height, *src.bounds)
+            
+            # Preparar array destino
+            # Leemos bandas (asumimos RGB o Gra)
+            # Simplificación: Usaremos la primera banda si es 1, o las 3 primeras si son más.
+            
+            if src.count >= 3:
+                bands_to_read = [1, 2, 3] # RGB
+                count = 3
+            else:
+                bands_to_read = [1] # Grayscale
+                count = 1
+
+            # Crear array destino para los datos reproyectados
+            dest_array = np.zeros((count, height, width), dtype=np.uint8)
+
+            for idx, band in enumerate(bands_to_read):
+                reproject(
+                    source=rasterio.band(src, band),
+                    destination=dest_array[idx],
+                    src_transform=src.transform,
+                    src_crs=src.crs,
+                    dst_transform=transform,
+                    dst_crs=dst_crs,
+                    resampling=Resampling.nearest)
+
+            # Generar Bounds [[lat_min, lon_min], [lat_max, lon_max]]
+            # Folium espera [[lat_min, lon_min], [lat_max, lon_max]] -> SW, NE
+            # Rasterio bounds: left, bottom, right, top -> lon_min, lat_min, lon_max, lat_max
+            # new_bounds = (transform * (0, height)) , ...
+            # Usaremos un método más directo para bounds lat/lon:
+            lon_min, lat_min, lon_max, lat_max = rasterio.transform.array_bounds(height, width, transform)
+            folium_bounds = [[lat_min, lon_min], [lat_max, lon_max]]
+
+            # Convertir array a Imagen PIL y guardar como PNG
+            # Formato (H, W, C) para PIL
+            img_data = np.moveaxis(dest_array, 0, -1)
+            
+            if count == 1:
+                img_data = img_data[:, :, 0] # Squeeze
+                img = Image.fromarray(img_data, mode='L')
+            else:
+                img = Image.fromarray(img_data, mode='RGB')
+                
+            # Hacer transparente lo negro/nulo si se desea (opcional complejo)
+            # Guardamos png temporal
+            png_fd, png_path = tempfile.mkstemp(suffix=".png")
+            os.close(png_fd)
+            img.save(png_path, format="PNG")
+            
+            return png_path, folium_bounds
+
     except Exception as e:
-        st.error(f"Error al leer el archivo SHP: {e}")
-        return None
+        st.error(f"Error procesando raster: {e}")
+        return None, None
 
-def compare_schemas(gdf1, gdf2):
-    """Compara las columnas y tipos de datos."""
-    cols1 = set(gdf1.columns)
-    cols2 = set(gdf2.columns)
+# --- APP PRINCIPAL ---
+
+def main():
+    st.title("✏️ Editor de Mapas y Geometrías")
+    st.markdown("Dibuja, define atributos y exporta datos compatibles con GIS (QGIS/ArcGIS).")
     
-    common_cols = cols1.intersection(cols2)
-    unique_1 = cols1 - cols2
-    unique_2 = cols2 - cols1
+    # --- ESTADO INICIAL ---
+    if 'work_gdf' not in st.session_state:
+        st.session_state['work_gdf'] = gpd.GeoDataFrame(columns=['geometry'], geometry='geometry', crs="EPSG:4326")
+    if 'map_key' not in st.session_state:
+        st.session_state['map_key'] = 0
+    # Estado para capas de referencia persistentes (cache simple por nombre)
+    if 'ref_layers' not in st.session_state:
+        st.session_state['ref_layers'] = {} # {name: {'type': 'vector'/'raster', 'data': gdf/path, 'bounds': ...}}
     
-    dtypes_diff = []
-    for col in common_cols:
-        if gdf1[col].dtype != gdf2[col].dtype:
-            dtypes_diff.append({
-                "Columna": col,
-                "Tipo en Archivo 1": str(gdf1[col].dtype),
-                "Tipo en Archivo 2": str(gdf2[col].dtype)
-            })
-            
-    return common_cols, unique_1, unique_2, dtypes_diff
+    # Estado del Mapa (Vista)
+    if 'map_center' not in st.session_state:
+        st.session_state['map_center'] = [-33.4489, -70.6693]
+    if 'map_zoom' not in st.session_state:
+        st.session_state['map_zoom'] = 10
 
-# --- INTERFAZ PRINCIPAL ---
-
-st.title("🗺️ Comparador de Shapefiles")
-st.markdown("### Analiza y visualiza diferencias entre dos archivos geoespaciales")
-
-with st.expander("ℹ️ Instrucciones"):
-    st.write("""
-    1. Para cada capa, selecciona **todos** los archivos que componen el Shapefile (.shp, .shx, .dbf, .prj, etc.) al mismo tiempo.
-    2. La aplicación identificará el archivo .shp principal y usará los auxiliares automáticamente.
-    3. Visualiza las diferencias en el mapa interactivo.
-    """)
-
-col_upload_1, col_upload_2 = st.columns(2)
-
-with col_upload_1:
-    st.subheader("📂 Archivo 1 (Referencia)")
-    files1 = st.file_uploader("Sube los archivos (.shp, .shx, .dbf...)", accept_multiple_files=True, key="files1")
-
-with col_upload_2:
-    st.subheader("📂 Archivo 2 (Comparación)")
-    files2 = st.file_uploader("Sube los archivos (.shp, .shx, .dbf...)", accept_multiple_files=True, key="files2")
-
-if files1 and files2:
-    with st.spinner("Procesando archivos..."):
-        path1, dir1 = save_uploaded_files(files1)
-        path2, dir2 = save_uploaded_files(files2)
+    # --- BARRA LATERAL ---
+    with st.sidebar:
+        st.header("1. Configuración")
         
-        if not path1:
-            st.error("❌ En el Grupo 1 falta el archivo .shp")
-        elif not path2:
-            st.error("❌ En el Grupo 2 falta el archivo .shp")
-        else:
-            gdf1 = load_data(path1)
-            gdf2 = load_data(path2)
+        # A. Capas de Referencia
+        with st.expander("📂 Capas de Referencia (SHP/TIF)"):
+            uploaded_refs = st.file_uploader(
+                "Subir archivos", 
+                accept_multiple_files=True, 
+                key="refs",
+                help="Soporta Shapefiles (.shp+.shx+.dbf) e Imágenes GeoTIFF (.tif)"
+            )
             
-            if gdf1 is not None and gdf2 is not None:
-                st.success("Archivos cargados correctamente.")
-                
-                # --- SELECCIÓN DE ID & ANÁLISIS AVANZADO ---
-                st.divider()
-                st.markdown("### 🔎 Comparación Avanzada por ID")
-                
-                # Detectar columnas comunes para sugerir ID
-                common_cols = list(set(gdf1.columns).intersection(set(gdf2.columns)))
-                common_cols.sort()
-                
-                # Intentar adivinar el ID
-                default_idx = 0
-                possible_ids = ['id', 'objectid', 'clave', 'code', 'rol']
-                for i, col in enumerate(common_cols):
-                    if col.lower() in possible_ids:
-                        default_idx = i
-                        break
-                
-                id_col = st.selectbox(
-                    "Selecciona la columna con el Identificador Único (ID) para cruzar los datos:", 
-                    options=common_cols,
-                    index=default_idx
-                )
-                
-                run_comparison = st.checkbox("Ejecutar comparación detallada (puede tardar en archivos grandes)", value=False)
-                
-                # --- PESTAÑAS DE ANÁLISIS ---
-                if run_comparison:
-                    # Preparar datos
-                    gdf1 = gdf1.set_index(id_col)
-                    gdf2 = gdf2.set_index(id_col)
-                    
-                    # Validar duplicados en ID
-                    if not gdf1.index.is_unique:
-                        st.error(f"⚠️ Error: La columna '{id_col}' tiene valores duplicados en el Archivo 1. Para comparar por ID, estos deben ser únicos.")
-                        st.stop()
-                    
-                    if not gdf2.index.is_unique:
-                        st.error(f"⚠️ Error: La columna '{id_col}' tiene valores duplicados en el Archivo 2. Para comparar por ID, estos deben ser únicos.")
-                        st.stop()
-                    
-                    ids1 = set(gdf1.index)
-                    ids2 = set(gdf2.index)
-                    
-                    added_ids = ids2 - ids1
-                    removed_ids = ids1 - ids2
-                    common_ids = ids1.intersection(ids2)
-                    
-                    # Analizar comunes
-                    modified_attrs = []
-                    modified_geom = []
-                    
-                    # Columns to compare (excluding geometry)
-                    compare_cols = [c for c in common_cols if c != id_col and c != 'geometry']
-                    
-                    with st.spinner(f"Analizando {len(common_ids)} registros comunes..."):
-                        for uid in common_ids:
-                            row1 = gdf1.loc[uid]
-                            row2 = gdf2.loc[uid]
-                            
-                            # 1. Comparar Atributos
-                            diffs = {}
-                            for col in compare_cols:
-                                val1 = row1[col]
-                                val2 = row2[col]
-                                # Manejo básico de nulos y tipos
-                                if pd.isna(val1) and pd.isna(val2):
-                                    continue
-                                if str(val1) != str(val2):
-                                    diffs[col] = f"{val1} -> {val2}"
-                            
-                            if diffs:
-                                diffs[id_col] = uid
-                                modified_attrs.append(diffs)
-                                
-                            # 2. Comparar Geometría (simplificado)
-                            # Usamos geom_equals o distance muy pequeña
-                            # Nota: row1 es una Serie, no siempre tiene el accesors .geometry
-                            # Obtenemos la geometria usando el nombre de la columna activa
-                            
-                            try:
-                                g1 = row1[gdf1.geometry.name]
-                                g2 = row2[gdf2.geometry.name]
-                                
-                                if g1 is not None and g2 is not None:
-                                    # Normalizar geometrías si es posible (buffer(0))
-                                    # Fix: asegurar que es objeto geometrico válido
-                                    if hasattr(g1, 'geom_equals') and not g1.geom_equals(g2):
-                                        modified_geom.append(uid)
-                            except Exception:
-                                pass # Si falla la comparación geométrica, ignoramos por ahora
-
-                    st.success("Análisis completado")
-                    
-                    tab_resumen, tab_detalles, tab_stats, tab_estructura, tab_grafico = st.tabs([
-                        "📊 Resultados Clave", 
-                        "📋 Detalle de Cambios",
-                        "📈 Estadísticas de Campos",
-                        "🏗️ Estructura", 
-                        "🌍 Mapa Avanzado"
-                    ])
-                    
-                    with tab_resumen:
-                         c1, c2, c3, c4 = st.columns(4)
-                         c1.metric("🆕 Nuevos Registros", len(added_ids))
-                         c2.metric("❌ Registros Eliminados", len(removed_ids))
-                         c3.metric("📝 Atributos Modificados", len(modified_attrs))
-                         c4.metric("📐 Geometría Modificada", len(modified_geom))
-                         
-                         st.markdown("#### Resumen Gráfico")
-                         chart_data = pd.DataFrame({
-                             "Categoría": ["Nuevos", "Eliminados", "Modif. Atributos", "Modif. Geometría"],
-                             "Cantidad": [len(added_ids), len(removed_ids), len(modified_attrs), len(modified_geom)]
-                         })
-                         st.bar_chart(chart_data.set_index("Categoría"))
-
-                    with tab_detalles:
-                        st.subheader("1. Cambios en Atributos (Registro por Registro)")
-                        if modified_attrs:
-                            df_mod = pd.DataFrame(modified_attrs)
-                            # Mover ID al principio
-                            cols = [id_col] + [c for c in df_mod.columns if c != id_col]
-                            st.dataframe(df_mod[cols], use_container_width=True)
-                            st.download_button("Descargar Cambios de Atributos (CSV)", df_mod.to_csv().encode('utf-8'), "cambios_atributos.csv")
-                        else:
-                            st.info("No se detectaron diferencias en atributos para los registros comunes.")
-
-                        st.divider()
-
-                        c_new, c_del = st.columns(2)
-                        # ... (existing content for new/deleted)
-                        with c_new:
-                            st.subheader("2. Registros Nuevos (Solo en Archivo 2)")
-                            if added_ids:
-                                df_added = gdf2.loc[list(added_ids)].reset_index()
-                                st.dataframe(df_added.drop(columns='geometry', errors='ignore').head(), use_container_width=True)
-                        with c_del:
-                             st.subheader("3. Registros Eliminados (Solo en Archivo 1)")
-                             if removed_ids:
-                                df_removed = gdf1.loc[list(removed_ids)].reset_index()
-                                st.dataframe(df_removed.drop(columns='geometry', errors='ignore').head(), use_container_width=True)
-
-                    with tab_stats:
-                        st.markdown("#### Comparación Estadística de Atributos")
-                        st.caption("Analizando columnas comunes para detectar cambios globales en los datos.")
+            if uploaded_refs:
+                # Botón procesar para no re-procesar en cada rerun si no cambia
+                if st.button("🔄 Procesar Capas Subidas"):
+                    with st.spinner("Procesando referencias..."):
+                        # 1. Separar Vectores y Rasters
+                        shps = []
+                        tifs = []
+                        others = [] # components like .shx
                         
-                        col_to_analyze = st.selectbox("Selecciona columna para ver detalle:", options=compare_cols)
+                        # Guardar todo en temp primero para agrupar SHPs
+                        # Usamos la funcion save_uploaded_files existente para SHP
+                        _, temp_dir = save_uploaded_files(uploaded_refs)
                         
-                        if col_to_analyze:
-                            s1 = gdf1[col_to_analyze]
-                            s2 = gdf2[col_to_analyze]
+                        # --- Procesar SHPs ---
+                        if temp_dir:
+                            import glob
+                            shapefiles_found = glob.glob(os.path.join(temp_dir, "*.shp"))
+                            for shp_path in shapefiles_found:
+                                try:
+                                    gdf = gpd.read_file(shp_path)
+                                    if gdf.crs and gdf.crs.to_string() != "EPSG:4326":
+                                        gdf = gdf.to_crs(epsg=4326)
+                                    
+                                    name = os.path.basename(shp_path)
+                                    st.session_state['ref_layers'][name] = {
+                                        'type': 'vector',
+                                        'data': gdf
+                                    }
+                                except Exception as e:
+                                    st.error(f"Error SHP {shp_path}: {e}")
                             
-                            is_numeric = pd.api.types.is_numeric_dtype(s1) and pd.api.types.is_numeric_dtype(s2)
+                        # --- Procesar rasters y KML/KMZ (uploaded_refs directo) ---
+                        for f in uploaded_refs:
+                            # Raster
+                            if f.name.lower().endswith(('.tif', '.tiff')):
+                                png_path, bounds = process_raster_upload(f)
+                                if png_path and bounds:
+                                    st.session_state['ref_layers'][f.name] = {
+                                        'type': 'raster',
+                                        'data': png_path,
+                                        'bounds': bounds
+                                    }
                             
-                            c_stat1, c_stat2 = st.columns(2)
-                            
-                            with c_stat1:
-                                st.info(f"📁 Archivo 1 ({file1.name if 'file1' in locals() else 'Ref'})")
-                                if is_numeric:
-                                    st.write(s1.describe())
-                                else:
-                                    st.write(f"**Valores Únicos:** {s1.nunique()}")
-                                    st.write("**Top 5 Frecuentes:**")
-                                    st.write(s1.value_counts().head())
+                            # KML/KMZ
+                            elif f.name.lower().endswith(('.kml', '.kmz')):
+                                try:
+                                    # Geopandas needs 'fiona' with KML driver enabled mostly.
+                                    # Direct "read_file" can read KML if driver supported.
+                                    # For KMZ, it's a zip. We need to unzip or handle via fiona virtual filesystem.
+                                    # Simplest: Save to file, extract if KMZ, read with gpd.
+                                    
+                                    # Save temp
+                                    with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{f.name}") as tmp_kml:
+                                        tmp_kml.write(f.getbuffer())
+                                        kml_path = tmp_kml.name
+                                        
+                                    # Handle KMZ (Zip)
+                                    target_load_path = kml_path
+                                    if f.name.lower().endswith('.kmz'):
+                                        with zipfile.ZipFile(kml_path, 'r') as z:
+                                            # KMZ usually has a doc.kml inside
+                                            kml_files = [n for n in z.namelist() if n.endswith('.kml')]
+                                            if kml_files:
+                                                z.extract(kml_files[0], os.path.dirname(kml_path))
+                                                target_load_path = os.path.join(os.path.dirname(kml_path), kml_files[0])
+                                    
+                                    # Load with GeoPandas
+                                    # Forzar driver 'KML' si LIBKML falla o es ambiguo
+                                    try:
+                                        gdf_kml = gpd.read_file(target_load_path, driver='KML')
+                                    except:
+                                        # Fallback sin especificar driver
+                                        gdf_kml = gpd.read_file(target_load_path)
+                                    
+                                    if not gdf_kml.empty:
+                                       if gdf_kml.crs and gdf_kml.crs.to_string() != "EPSG:4326":
+                                           gdf_kml = gdf_kml.to_crs(epsg=4326)
+                                           
+                                       st.session_state['ref_layers'][f.name] = {
+                                            'type': 'vector',
+                                            'data': gdf_kml
+                                       }
+                                except Exception as e:
+                                    st.error(f"Error KML/KMZ {f.name}: {e}. (Asegúrate que GDAL soporte KML/LIBKML)")
 
-                            with c_stat2:
-                                st.success(f"📁 Archivo 2 ({file2.name if 'file2' in locals() else 'Comp'})")
-                                if is_numeric:
-                                    st.write(s2.describe())
-                                else:
-                                    st.write(f"**Valores Únicos:** {s2.nunique()}")
-                                    st.write("**Top 5 Frecuentes:**")
-                                    st.write(s2.value_counts().head())
-                            
-                            if is_numeric:
-                                st.markdown("##### Distribución")
-                                diff_val = s2.mean() - s1.mean()
-                                st.metric(f"Diferencia Promedio ({col_to_analyze})", f"{diff_val:.4f}", delta=diff_val)
-                                
-                                # Simple histogram comparison
-                                df_hist = pd.DataFrame({
-                                    'Archivo 1': s1,
-                                    'Archivo 2': s2
-                                })
-                                st.bar_chart(df_hist)
-                                
-                    with tab_estructura:
-                         # Reutilizar lógica existente pero dentro de la pestaña
-                         common, u1, u2, dtype_mismatch = compare_schemas(gdf1.reset_index(), gdf2.reset_index())
-                         col_struct_1, col_struct_2 = st.columns(2)
-                         with col_struct_1:
-                            st.markdown("##### Columnas exclusivas en Archivo 1")
-                            if u1: st.dataframe(pd.DataFrame(list(u1), columns=["Nombre Columna"]), use_container_width=True)
-                         with col_struct_2:
-                            st.markdown("##### Columnas exclusivas en Archivo 2")
-                            if u2: st.dataframe(pd.DataFrame(list(u2), columns=["Nombre Columna"]), use_container_width=True)
+                        st.success(f"Referencias cargadas: {len(st.session_state['ref_layers'])}")
 
-                else:
-                    # VISTA SIMPLE (SIN ID SELECCIONADO AÚN O CHECKBOX OFF)
-                    st.info("Activa la casilla 'Ejecutar comparación detallada' para ver el análisis de altas, bajas y modificaciones.")
-                    
-                    tab_resumen, tab_estructura, tab_datos, tab_grafico = st.tabs([
-                        "📊 Resumen General", 
-                        "🏗️ Estructura & Schema", 
-                        "📋 Datos & Atributos", 
-                        "🌍 Visualización Gráfica"
-                    ])
-                    # ... (Mantener la lógica básica anterior como fallback o vista rápida)
-                    with tab_resumen:
-                         # ... (Lógica simple original)
-                         st.markdown("#### Métricas Principales")
-                         m1, m2 = st.columns(2)
-                         m1.metric("Filas Archivo 1", len(gdf1))
-                         m2.metric("Filas Archivo 2", len(gdf2))
-                    
-                    with tab_estructura:
-                         # ... (Lógica simple original)
-                         common, u1, u2, dtype_mismatch = compare_schemas(gdf1, gdf2)
-                         st.write("Comparación de columnas ejecutada.")
-                         if dtype_mismatch: st.write("Hay diferencias de tipos.")
-
-                    with tab_datos:
-                         st.dataframe(gdf1.head())
+        # B. Buscador y Zoom
+        st.divider()
+        st.markdown("### 🔍 Inspector y Zoom")
+        
+        # Filtrar solo vectores para búsqueda
+        vector_layers = {k:v for k,v in st.session_state['ref_layers'].items() if v['type'] == 'vector'}
+        
+        if vector_layers:
+            sel_layer_name = st.selectbox("Capa:", options=list(vector_layers.keys()))
+            if sel_layer_name:
+                gdf_search = vector_layers[sel_layer_name]['data']
+                cols = list(gdf_search.columns.drop('geometry'))
                 
-                # ... (El bloque de mapa se mantiene fuera para ser común o adaptarse)
-                        
-                # 4. GRÁFICO
-                with tab_grafico:
-                    st.markdown("#### Mapa Comparativo")
-                    st.caption("Visualización de ambas capas. Usa el control de capas (arriba derecha) para alternar.")
+                sel_col = st.selectbox("Columna ID/Nombre:", options=cols, index=0 if cols else None)
+                
+                if sel_col:
+                    # Limitar valores para performance
+                    unique_vals = gdf_search[sel_col].astype(str).unique()
+                    sel_val = st.selectbox("Valor:", options=unique_vals)
                     
-                    # Reproyectar a EPSG:4326 para Folium si es necesario
+                    if st.button("📍 Ir al Objeto"):
+                        # Buscar geometría
+                        subset = gdf_search[gdf_search[sel_col].astype(str) == sel_val]
+                        if not subset.empty:
+                            geom = subset.geometry.iloc[0]
+                            # Calcular centroide y bounds
+                            bounds = geom.bounds # minx, miny, maxx, maxy
+                            center_lat = (bounds[1] + bounds[3]) / 2
+                            center_lon = (bounds[0] + bounds[2]) / 2
+                            
+                            st.session_state['map_center'] = [center_lat, center_lon]
+                            st.session_state['map_zoom'] = 14 # Zoom cercano
+                            st.session_state['map_key'] += 1 # Forzar recarga mapa
+                            st.rerun()
+        else:
+            st.caption("Sube shapefiles para buscar objetos.")
+
+        # C. Archivo de Trabajo y Tablas (Código existente, condensado visualmente)
+        st.divider()
+        with st.expander("💾 Configuración de Guardado"):
+            default_path = os.path.join(os.getcwd(), "mis_dibujos.geojson")
+            work_path = st.text_input("Ruta:", value=default_path)
+            
+            c1, c2 = st.columns(2)
+            if c1.button("🔄 Cargar"):
+                if os.path.exists(work_path):
                     try:
-                        if gdf1.crs and gdf1.crs.to_string() != "EPSG:4326":
-                            gdf1_map = gdf1.to_crs(epsg=4326)
-                        else:
-                            gdf1_map = gdf1
-                            
-                        if gdf2.crs and gdf2.crs.to_string() != "EPSG:4326":
-                            gdf2_map = gdf2.to_crs(epsg=4326)
-                        else:
-                            gdf2_map = gdf2
-                            
-                        # Crear mapa centrado en el primer archivo
-                        bounds = gdf1_map.total_bounds
-                        center_lat = (bounds[1] + bounds[3]) / 2
-                        center_lon = (bounds[0] + bounds[2]) / 2
-                        
-                        m = folium.Map(location=[center_lat, center_lon], zoom_start=10, tiles="CartoDB positron")
-                        
-                        # Estilos
-                        style1 = {'fillColor': '#3b82f6', 'color': '#3b82f6', 'weight': 2, 'fillOpacity': 0.4}
-                        style2 = {'fillColor': '#ef4444', 'color': '#ef4444', 'weight': 2, 'fillOpacity': 0.4}
-                        
-                        # Añadir capas
-                        # Prepare data for mapping (convert non-serializable types)
-                        def prepare_for_map(gdf):
-                            gdf_clean = gdf.copy()
-                            for col in gdf_clean.columns:
-                                if gdf_clean[col].dtype == 'object' or pd.api.types.is_datetime64_any_dtype(gdf_clean[col]):
-                                    gdf_clean[col] = gdf_clean[col].astype(str)
-                            return gdf_clean
+                        loaded_gdf = gpd.read_file(work_path)
+                        if loaded_gdf.crs and loaded_gdf.crs.to_string() != "EPSG:4326":
+                            loaded_gdf = loaded_gdf.to_crs(epsg=4326)
+                        st.session_state['work_gdf'] = loaded_gdf
+                        st.session_state['map_key'] += 1
+                        st.success(f"Cargado")
+                    except Exception as e: st.error(str(e))
+            
+            if c2.button("💾 Guardar"):
+                try:
+                    gdf_save = st.session_state['work_gdf'].copy()
+                    if work_path.endswith(".shp"):
+                        gdf_save.to_file(work_path)
+                    else:
+                        gdf_save.to_file(work_path, driver="GeoJSON")
+                    st.success("Guardado")
+                except Exception as e: st.error(str(e))
 
-                        gdf1_map = prepare_for_map(gdf1_map)
-                        gdf2_map = prepare_for_map(gdf2_map)
+        st.divider()
+        new_col_name = st.text_input("Nueva Columna")
+        if st.button("➕ Agregar"):
+             st.session_state['work_gdf'][new_col_name] = None
+             st.success("Agregada")
 
-                        folium.GeoJson(
-                            gdf1_map,
-                            name=f"Archivo 1: {os.path.basename(path1)}",
-                            style_function=lambda x: style1,
-                            tooltip=folium.GeoJsonTooltip(fields=list(gdf1_map.columns[:3]), aliases=list(gdf1_map.columns[:3])) 
-                            if len(gdf1_map.columns) > 1 else None
-                        ).add_to(m)
-                        
-                        folium.GeoJson(
-                            gdf2_map,
-                            name=f"Archivo 2: {os.path.basename(path2)}",
-                            style_function=lambda x: style2,
-                            tooltip=folium.GeoJsonTooltip(fields=list(gdf2_map.columns[:3]), aliases=list(gdf2_map.columns[:3]))
-                            if len(gdf2_map.columns) > 1 else None
-                        ).add_to(m)
-                        
-                        folium.LayerControl().add_to(m)
-                        
-                        st_folium(m, width="100%", height=600)
-                        
-                    except Exception as e:
-                        st.error(f"Error al generar el mapa: {e}")
-                        st.warning("Verifica que los archivos tengan un CRS válido definido.")
 
-        # Cleanup temporal directories (optional, OS usually handles /tmp but good practice)
-        # shutil.rmtree(dir1)
-        # shutil.rmtree(dir2)
+    # --- ZONA PRINCIPAL ---
+    col_map, col_table = st.columns([2, 1])
+
+    if 'Seleccionar' not in st.session_state['work_gdf'].columns:
+        st.session_state['work_gdf'].insert(0, 'Seleccionar', False)
+    
+    st.subheader("🌍 Vista de Mapa")
+    
+    # Usar estado para centro/zoom
+    m = folium.Map(
+        location=st.session_state['map_center'], 
+        zoom_start=st.session_state['map_zoom'], 
+        tiles="CartoDB positron"
+    )
+    
+    st.markdown("""<style>.leaflet-div-icon { background: #fff; border: 1px solid #666; border-radius: 50%; }</style>""", unsafe_allow_html=True)
+    
+    # RENDERIZAR REFERENCIAS (DESDE SESSION STATE)
+    for name, layer in st.session_state['ref_layers'].items():
+        if layer['type'] == 'vector':
+            # Filtrar columnas válidas para Tooltip (excluir geometry y tipos raros)
+            valid_tooltip_cols = [c for c in layer['data'].columns if c != 'geometry' and c != 'style']
+            # Tomar máximo 3
+            tooltip_fields = valid_tooltip_cols[:3]
+            
+            folium.GeoJson(
+                layer['data'],
+                name=f"Ref: {name}",
+                style_function=lambda x: {'color': '#555', 'weight': 1, 'fillOpacity': 0.1},
+                tooltip=folium.GeoJsonTooltip(fields=tooltip_fields) if tooltip_fields else None
+            ).add_to(m)
+        elif layer['type'] == 'raster':
+            # ImageOverlay
+            folium.raster_layers.ImageOverlay(
+                image=layer['data'],
+                bounds=layer['bounds'],
+                opacity=0.6,
+                name=f"Img: {name}"
+            ).add_to(m)
+
+    # Capa de Trabajo
+    wgdf = st.session_state['work_gdf']
+    if not wgdf.empty:
+        st.session_state['work_gdf']['Seleccionar'] = st.session_state['work_gdf']['Seleccionar'].astype(bool)
+        selected_mask = wgdf['Seleccionar']
+        gdf_selected = wgdf[selected_mask]
+        gdf_normal = wgdf[~selected_mask]
+        
+        if not gdf_normal.empty:
+            folium.GeoJson(
+                gdf_normal.drop(columns=['Seleccionar']), name="Datos",
+                style_function=lambda x: {'color': '#2563eb', 'weight': 3, 'fillOpacity': 0.4},
+                marker=folium.CircleMarker(radius=4, fill_color='#2563eb', fill_opacity=0.6, color='white', weight=1)
+            ).add_to(m)
+        if not gdf_selected.empty:
+            folium.GeoJson(
+                gdf_selected.drop(columns=['Seleccionar']), name="Seleccionados",
+                style_function=lambda x: {'color': '#ef4444', 'weight': 5, 'fillOpacity': 0.7},
+                marker=folium.CircleMarker(radius=6, fill_color='#ef4444', fill_opacity=0.9, color='black', weight=2)
+            ).add_to(m)
+
+    draw = Draw(
+        export=False, position='topleft',
+        draw_options={'polyline': True, 'polygon': True, 'rectangle': True, 'circle': False, 'marker': False, 'circlemarker': True},
+        edit_options={'edit': False, 'remove': False}
+    )
+    draw.add_to(m)
+    
+    folium.LayerControl().add_to(m)
+    
+    output = st_folium(m, width="100%", height=500, key=f"map_{st.session_state['map_key']}")
+
+    # LOGIN INCORPORACIÓN
+    if output and "all_drawings" in output:
+        drawings = output["all_drawings"]
+        features = []
+        if isinstance(drawings, list): features = drawings
+        elif isinstance(drawings, dict) and "features" in drawings: features = drawings["features"]
+        
+        if features:
+            st.info(f"Has dibujado {len(features)} nuevos elementos.")
+            if st.button("📥 Incorporar", type="primary"):
+                new_gdf = gpd.GeoDataFrame.from_features(features, crs="EPSG:4326")
+                for col in st.session_state['work_gdf'].columns:
+                    if col not in new_gdf.columns and col != 'geometry':
+                         new_gdf[col] = False if col == 'Seleccionar' else None
+                st.session_state['work_gdf'] = pd.concat([st.session_state['work_gdf'], new_gdf], ignore_index=True)
+                st.session_state['map_key'] += 1
+                st.rerun()
+
+    # TABLA
+    st.divider()
+    if not st.session_state['work_gdf'].empty:
+        cols = ['Seleccionar'] + [c for c in st.session_state['work_gdf'].columns if c != 'Seleccionar' and c != 'geometry']
+        edited_df = st.data_editor(
+            st.session_state['work_gdf'][cols],
+            num_rows="dynamic", use_container_width=True, key="data_editor",
+            column_config={"Seleccionar": st.column_config.CheckboxColumn("Highlight", default=False)}
+        )
+        if not edited_df.equals(st.session_state['work_gdf'][cols]):
+            try:
+                for col in edited_df.columns: st.session_state['work_gdf'][col] = edited_df[col]
+                # Check highlight toggle
+                if not edited_df['Seleccionar'].equals(st.session_state['work_gdf'][cols]['Seleccionar']):
+                     st.rerun()
+            except: pass
+    else: st.info("Tabla vacía.")
+
+if __name__ == "__main__":
+    main()
