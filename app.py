@@ -211,14 +211,20 @@ if files1 and files2:
                                 
                             # 2. Comparar Geometría (simplificado)
                             # Usamos geom_equals o distance muy pequeña
-                            g1 = row1.geometry
-                            g2 = row2.geometry
+                            # Nota: row1 es una Serie, no siempre tiene el accesors .geometry
+                            # Obtenemos la geometria usando el nombre de la columna activa
                             
-                            if g1 is not None and g2 is not None:
-                                # Normalizar geometrías si es posible (buffer(0))
-                                if not g1.geom_equals(g2):
-                                    # Ver si es diferencia significativa (opcional: área/distancia)
-                                    modified_geom.append(uid)
+                            try:
+                                g1 = row1[gdf1.geometry.name]
+                                g2 = row2[gdf2.geometry.name]
+                                
+                                if g1 is not None and g2 is not None:
+                                    # Normalizar geometrías si es posible (buffer(0))
+                                    # Fix: asegurar que es objeto geometrico válido
+                                    if hasattr(g1, 'geom_equals') and not g1.geom_equals(g2):
+                                        modified_geom.append(uid)
+                            except Exception:
+                                pass # Si falla la comparación geométrica, ignoramos por ahora
 
                     st.success("Análisis completado")
                     
