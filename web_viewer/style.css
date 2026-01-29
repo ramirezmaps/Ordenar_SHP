@@ -1,0 +1,94 @@
+/* CSS Personalizado */
+
+/* Scrollbar fina para el sidebar */
+::-webkit-scrollbar {
+    width: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+}
+
+/* Ajustes de Leaflet */
+.leaflet-control-zoom {
+    border: none !important;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
+    border-radius: 8px !important;
+    overflow: hidden;
+}
+
+.leaflet-control-layers {
+    border: none !important;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
+    border-radius: 8px !important;
+    padding: 8px !important;
+    font-family: inherit !important;
+}
+
+/* Geoman Toolbar Customization */
+/* Solución Robusta: Bajar todo el contenedor de controles de la izquierda */
+.leaflet-top.leaflet-left {
+    margin-top: 60px !important;
+}
+
+.leaflet-pm-toolbar {
+    border: none !important;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
+}
+
+.leaflet-pm-actions-container {
+    background-color: #1e293b !important;
+    /* Dark slate */
+    border-radius: 6px !important;
+}
+
+.leaflet-pm-action {
+    color: white !important;
+    font-family: sans-serif !important;
+}
+
+.leaflet-pm-action:hover {
+    background-color: #334155 !important;
+}
+
+/* Popup Styles */
+.custom-popup .leaflet-popup-content-wrapper {
+    border-radius: 12px;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+    padding: 0;
+}
+
+.custom-popup .leaflet-popup-content {
+    margin: 12px;
+}
+
+/* Solución Tabla no visible: Asegurar Renderizado Tabulator */
+.tabulator {
+    border: none !important;
+}
+
+.tabulator-header {
+    border-bottom: 2px solid #e2e8f0 !important;
+    background-color: #f8fafc !important;
+    color: #475569 !important;
+    font-weight: 600 !important;
+}
+
+.tabulator-row {
+    border-bottom: 1px solid #f1f5f9 !important;
+}
+
+.tabulator-row:hover {
+    background-color: #f1f5f9 !important;
+}
+
+/* Asegurar que el mapa no tape nada (z-index 0) y los popup (z-index alto) */

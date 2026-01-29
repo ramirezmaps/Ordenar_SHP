@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GeoSparkStudio - Draw Editor</title>
+
+    <!-- Tailwind CSS (Estilos Modernos) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- FontAwesome (Iconos) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- Leaflet (Mapa) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!-- Leaflet Geoman (Dibujo Pro: Snapping, Cutting, Rotating) -->
+    <link rel="stylesheet" href="https://unpkg.com/@geoman-io/leaflet-geoman-free@latest/dist/leaflet-geoman.css" />
+    <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free@latest/dist/leaflet-geoman.min.js"></script>
+
+    <!-- ShpJS (Cargar Shapefiles) -->
+    <script src="https://unpkg.com/shpjs@latest/dist/shp.js"></script>
+
+    <!-- JSZip (Para KMZ y agrupar SHP sueltos) -->
+    <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
+
+    <!-- toGeoJSON (KML/KMZ support) -->
+    <script src="https://unpkg.com/@tmcw/togeojson@5.8.1/dist/togeojson.umd.js"></script>
+
+    <!-- Tabulator (Tabla de Atributos Pro) -->
+    <link href="https://unpkg.com/tabulator-tables@6.2.1/dist/css/tabulator_semanticui.min.css" rel="stylesheet">
+    <script type="text/javascript" src="https://unpkg.com/tabulator-tables@6.2.1/dist/js/tabulator.min.js"></script>
+
+    <!-- SweetAlert2 (Alertas bonitas) -->
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
+    <!-- Estilos Propios -->
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body class="h-screen w-screen overflow-hidden bg-gray-100 font-sans">
+
+    <!-- Título Flotante Elegante (Top Center) -->
+    <div
+        class="absolute top-4 left-1/2 transform -translate-x-1/2 z-[800] pointer-events-none bg-white/80 backdrop-blur-sm px-6 py-2 rounded-full shadow-sm border border-white/50">
+        <h1 class="text-slate-700 font-bold text-lg tracking-wide flex items-center gap-2">
+            <i class="fa-solid fa-bolt text-amber-500"></i> GeoSparkStudio <span
+                class="font-light text-slate-500 text-sm">| Draw Editor</span>
+        </h1>
+    </div>
+
+    <!-- Button to Open Sidebar (Always visible when sidebar is closed) -->
+    <button id="openSidebarBtn" onclick="toggleSidebar()"
+        class="absolute top-4 left-4 z-[3000] bg-white p-3 rounded-lg shadow-lg hover:bg-slate-50 text-slate-700 transition hidden">
+        <i class="fa-solid fa-bars"></i>
+    </button>
+
+    <!-- Sidebar Flotante -->
+    <div id="sidebar"
+        class="absolute top-4 left-4 z-[3000] w-80 bg-white/95 backdrop-blur shadow-2xl rounded-xl flex flex-col transition-all duration-300 max-h-[95vh]">
+
+        <!-- Header Sidebar -->
+        <div class="p-4 border-b border-gray-100 flex justify-between items-center bg-slate-50 rounded-t-xl">
+            <div class="flex items-center gap-2">
+                <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white">
+                    <i class="fa-solid fa-layer-group"></i>
+                </div>
+                <h1 class="font-bold text-slate-800 text-lg">GeoSparkStudio</h1>
+            </div>
+            <button onclick="toggleSidebar()" class="text-gray-400 hover:text-blue-600 transition">
+                <i class="fa-solid fa-chevron-left"></i>
+            </button>
+        </div>
+
+        <!-- Contenido Sidebar (Scrollable) -->
+        <div class="flex-1 overflow-y-auto p-4 space-y-4">
+
+            <!-- Sección: Gestión de Datos -->
+            <div class="space-y-2">
+                <label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Proyecto</label>
+
+                <div class="grid grid-cols-2 gap-2">
+                    <button onclick="document.getElementById('fileInput').click()"
+                        class="flex items-center justify-center gap-2 bg-blue-50 text-blue-700 py-2 rounded-lg hover:bg-blue-100 transition font-medium text-sm">
+                        <i class="fa-solid fa-folder-open"></i> Importar
+                    </button>
+                    <button onclick="exportData()"
+                        class="flex items-center justify-center gap-2 bg-emerald-50 text-emerald-700 py-2 rounded-lg hover:bg-emerald-100 transition font-medium text-sm">
+                        <i class="fa-solid fa-download"></i> Guardar
+                    </button>
+                    <input type="file" id="fileInput" class="hidden" multiple accept=".zip,.json,.geojson,.kml"
+                        onchange="handleFileUpload(this)">
+                </div>
+            </div>
+
+            <hr class="border-gray-100">
+
+            <!-- Sección: Capas -->
+            <div class="space-y-2">
+                <div class="flex justify-between items-center">
+                    <label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Capas (Layers)</label>
+                    <span id="layerCount" class="text-xs bg-gray-200 px-2 py-0.5 rounded-full text-gray-600">0</span>
+                </div>
+                <div id="layerList" class="space-y-1">
+                    <!-- Las capas se inyectan aqui via JS -->
+                    <div class="text-sm text-gray-400 italic text-center py-4">Sin capas cargadas</div>
+                </div>
+            </div>
+
+            <hr class="border-gray-100">
+
+            <!-- Sección: Inspector / Atributos -->
+            <!-- Sección: Inspector MOVIDA AL PANEL DERECHO -->
+            <div class="p-4 bg-blue-50 rounded border border-blue-100 text-xs text-blue-700">
+                <i class="fa-solid fa-circle-info"></i> Selecciona un dibujo para ver sus atributos en el panel derecho.
+            </div>
+
+        </div>
+
+        <!-- Footer Sidebar -->
+        <div class="p-3 border-t border-gray-100 bg-gray-50 rounded-b-xl text-xs text-center text-gray-400">
+            Powered by Leaflet + Geoman
+        </div>
+    </div>
+
+    <!-- Panel Inspector Flotante (Derecha) -->
+    <div id="inspectorWidget"
+        class="absolute top-4 right-4 z-[900] w-72 bg-white/95 backdrop-blur shadow-2xl rounded-xl flex flex-col transition-all duration-300 transform translate-x-[150%]">
+        <div class="p-3 border-b border-gray-100 flex justify-between items-center bg-slate-50 rounded-t-xl">
+            <h3 class="font-bold text-slate-800 text-sm"><i class="fa-solid fa-pen-to-square"></i> Propiedades</h3>
+            <button onclick="closeInspector()" class="text-gray-400 hover:text-red-500 transition">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+
+        <div class="p-4 space-y-3">
+            <div id="inspectorPanel" class="space-y-2 max-h-[60vh] overflow-y-auto">
+                <!-- Inputs dinámicos aquí -->
+            </div>
+
+            <button id="saveAttributesBtn"
+                class="w-full bg-blue-600 text-white py-2 rounded shadow hover:bg-blue-700 transition font-medium text-sm"
+                onclick="saveActiveAttributes()">
+                Guardar Atributos
+            </button>
+        </div>
+    </div>
+
+    <!-- Panel Inferior: Tabla de Atributos -->
+    <div id="bottomPanel"
+        class="absolute bottom-0 left-0 w-full h-[30vh] bg-white z-[999] shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] transition-transform duration-300 translate-y-full flex flex-col">
+        <div class="flex justify-between items-center px-4 py-2 bg-slate-100 border-b border-gray-200">
+            <h3 class="font-bold text-slate-700 text-sm"><i class="fa-solid fa-table"></i> Tabla de Atributos</h3>
+            <button onclick="toggleBottomPanel()" class="text-gray-500 hover:text-red-500">
+                <i class="fa-solid fa-xmark"></i> Cerrar
+            </button>
+        </div>
+        <div id="attributeTable" class="flex-1 w-full bg-white"></div>
+    </div>
+
+    <!-- Botón Flotante para abrir Tabla -->
+    <button onclick="toggleBottomPanel()"
+        class="absolute bottom-4 right-4 z-[900] bg-white p-3 rounded-full shadow-lg hover:bg-slate-50 text-slate-700 transition"
+        title="Abrir Tabla">
+        <i class="fa-solid fa-table-list"></i>
+    </button>
+
+    <!-- Contenedor Mapa -->
+    <div id="map" class="h-full w-full bg-slate-200 z-0"></div>
+
+    <!-- JS Principal -->
+    <script src="table_logic.js"></script>
+    <script src="app.js"></script>
+</body>
+
+</html>

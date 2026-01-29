@@ -12,28 +12,58 @@ import glob
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
-    page_title="Editor Geoespacial",
-    page_icon="✏️",
+    page_title="GeoEditor Pro",
+    page_icon="🗺️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- ESTILOS CSS ---
+# --- ESTILOS CSS PROFESIONAL ---
 st.markdown("""
     <style>
-    .main {
-        background-color: #f8f9fa;
-    }
+    /* Reset básico y Fuentes */
     .stApp {
-        font-family: 'Inter', sans-serif;
+        font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     }
+    
+    /* Maximizar area de trabajo */
+    .main .block-container {
+        padding-top: 1rem;
+        padding-bottom: 1rem;
+        max-width: 98% !important;
+    }
+    
+    /* Header limpio */
+    header[data-testid="stHeader"] {
+        display: none;
+    }
+    
+    /* Sidebar personalziado */
+    [data-testid="stSidebar"] {
+        background-color: #f8fafc;
+        border-right: 1px solid #e2e8f0;
+    }
+    
+    /* Títulos */
     h1, h2, h3 {
-        color: #1e293b;
-        font-weight: 700;
+        color: #0f172a;
+        font-weight: 600;
+        letter-spacing: -0.025em;
     }
-    /* Ajustes para maximizar el mapa */
+    
+    /* Map Container Sizing - Vital para el look "App" */
     iframe {
+        width: 100% !important;
+        height: 85vh !important; /* Altura dinámica masiva */
+        border-radius: 8px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    }
+    
+    /* Botones primarios mas atractivos */
+    .stButton>button {
         width: 100%;
+        border-radius: 6px;
+        font-weight: 500;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -139,11 +169,61 @@ def process_raster_upload(uploaded_file):
         st.error(f"Error procesando raster: {e}")
         return None, None
 
+def handle_table_edit():
+    """Callback para manejar cambios en la tabla antes de recargar el script."""
+    if "data_editor" not in st.session_state:
+        return
+        
+    changes = st.session_state["data_editor"]
+    needs_map_update = False
+    
+    # Referencia al DF de trabajo
+    gdf = st.session_state['work_gdf']
+    
+    # 1. Filas Editadas
+    # changes['edited_rows'] es {row_idx: {col_name: new_val}}
+    for idx_str, edits in changes.get("edited_rows", {}).items():
+        idx = int(idx_str)
+        # Verificar integridad índex
+        if idx < len(gdf):
+            for col, val in edits.items():
+                if col in gdf.columns:
+                    # Aplicar cambio
+                    gdf.at[idx, col] = val
+                    if col == 'Seleccionar':
+                        needs_map_update = True
+                        
+    # 2. Filas Borradas
+    deleted = changes.get("deleted_rows", [])
+    if deleted:
+        # Borrar por índice y resetear
+        st.session_state['work_gdf'] = gdf.drop(index=deleted).reset_index(drop=True)
+        needs_map_update = True
+        
+    # (Opcional) Filas Agregadas - st.data_editor puede agregar filas vacías si num_rows="dynamic"
+    # Handling complejo en GIS sin geometría, lo dejamos básico o ignoramos si no hay geom.
+    # Por ahora el usuario agrega columnas o dibuja, no agrega filas manuales en blanco.
+    
+    # Si hubo cambio visual relevante, forzamos actualización de mapa
+    if needs_map_update:
+         if 'last_view' in st.session_state:
+             if st.session_state['last_view']['center']:
+                st.session_state['map_center'] = st.session_state['last_view']['center']
+             if st.session_state['last_view']['zoom']:
+                st.session_state['map_zoom'] = st.session_state['last_view']['zoom']
+         
+         st.session_state['map_key'] += 1
+
 # --- APP PRINCIPAL ---
 
 def main():
-    st.title("✏️ Editor de Mapas y Geometrías")
-    st.markdown("Dibuja, define atributos y exporta datos compatibles con GIS (QGIS/ArcGIS).")
+    # Título Flotante / Compacto
+    st.markdown("""
+        <div style="display: flex; align-items: center; gap: 10px; padding-bottom: 10px;">
+            <h3 style="margin:0; padding:0;">✏️ GeoEditor Pro</h3>
+            <span style="color:gray; font-size:0.9em;">| Editor GIS Web</span>
+        </div>
+    """, unsafe_allow_html=True)
     
     # --- ESTADO INICIAL ---
     if 'work_gdf' not in st.session_state:
@@ -162,31 +242,70 @@ def main():
 
     # --- BARRA LATERAL ---
     with st.sidebar:
-        st.header("1. Configuración")
+        st.title("🗺️ Herramientas")
         
-        # A. Capas de Referencia
-        with st.expander("📂 Capas de Referencia (SHP/TIF)"):
+        # 1. GESTIÓN DE DATOS Y PROYECTO
+        with st.expander("📂 Proyecto y Datos", expanded=True):
+            st.markdown("**Archivo de Trabajo**")
+            default_path = os.path.join(os.getcwd(), "mis_dibujos.geojson")
+            work_path = st.text_input("Ruta:", value=default_path, label_visibility="collapsed")
+            
+            c_load, c_save = st.columns(2)
+            if c_load.button("📂 Cargar"):
+                if os.path.exists(work_path):
+                    try:
+                        loaded_gdf = gpd.read_file(work_path)
+                        if loaded_gdf.crs and loaded_gdf.crs.to_string() != "EPSG:4326":
+                            loaded_gdf = loaded_gdf.to_crs(epsg=4326)
+                        st.session_state['work_gdf'] = loaded_gdf
+                        st.session_state['map_key'] += 1
+                        st.success("Cargado")
+                    except Exception as e: st.error(str(e))
+            
+            if c_save.button("💾 Guardar"):
+                try:
+                    gdf_save = st.session_state['work_gdf'].copy()
+                    if work_path.endswith(".shp"):
+                        gdf_save.to_file(work_path)
+                    else:
+                        gdf_save.to_file(work_path, driver="GeoJSON")
+                    st.success("Guardado!")
+                except Exception as e: st.error(str(e))
+                
+            st.divider()
+            st.markdown("**Gestión de Campos**")
+            new_col_name = st.text_input("Nombre Columna", placeholder="Ej: Comentario")
+            new_col_type = st.selectbox("Tipo", ["Texto", "Número Entero", "Número Decimal"], label_visibility="collapsed")
+            
+            if st.button("➕ Crear Columna"):
+                if new_col_name:
+                    if new_col_name not in st.session_state['work_gdf'].columns:
+                        if new_col_type == "Número Entero":
+                                st.session_state['work_gdf'][new_col_name] = pd.Series(dtype='Int64')
+                        elif new_col_type == "Número Decimal":
+                                st.session_state['work_gdf'][new_col_name] = pd.Series(dtype='float')
+                        else:
+                                st.session_state['work_gdf'][new_col_name] = None
+                        st.success(f"Campo '{new_col_name}' ok.")
+                        st.rerun()
+                else:
+                    st.warning("Esa columna ya existe.")
+
+        # 2. CAPAS Y ESTILOS
+        with st.expander("🎨 Capas y Estilos", expanded=False):
+            st.markdown("**Capas de Referencia**")
             uploaded_refs = st.file_uploader(
-                "Subir archivos", 
+                "Subir (SHP/KML/TIF)", 
                 accept_multiple_files=True, 
                 key="refs",
-                help="Soporta Shapefiles (.shp+.shx+.dbf) e Imágenes GeoTIFF (.tif)"
             )
             
             if uploaded_refs:
-                # Botón procesar para no re-procesar en cada rerun si no cambia
-                if st.button("🔄 Procesar Capas Subidas"):
-                    with st.spinner("Procesando referencias..."):
-                        # 1. Separar Vectores y Rasters
-                        shps = []
-                        tifs = []
-                        others = [] # components like .shx
-                        
-                        # Guardar todo en temp primero para agrupar SHPs
-                        # Usamos la funcion save_uploaded_files existente para SHP
+                if st.button("🔄 Procesar Capas"):
+                    with st.spinner("Procesando..."):
                         _, temp_dir = save_uploaded_files(uploaded_refs)
                         
-                        # --- Procesar SHPs ---
+                        # SHP
                         if temp_dir:
                             import glob
                             shapefiles_found = glob.glob(os.path.join(temp_dir, "*.shp"))
@@ -195,187 +314,67 @@ def main():
                                     gdf = gpd.read_file(shp_path)
                                     if gdf.crs and gdf.crs.to_string() != "EPSG:4326":
                                         gdf = gdf.to_crs(epsg=4326)
-                                    
                                     name = os.path.basename(shp_path)
-                                    st.session_state['ref_layers'][name] = {
-                                        'type': 'vector',
-                                        'data': gdf
-                                    }
-                                except Exception as e:
-                                    st.error(f"Error SHP {shp_path}: {e}")
-                            
-                        # --- Procesar rasters y KML/KMZ (uploaded_refs directo) ---
+                                    st.session_state['ref_layers'][name] = {'type': 'vector', 'data': gdf}
+                                except Exception as e: st.error(f"{shp_path}: {e}")
+                        
+                        # Raster/KML
                         for f in uploaded_refs:
-                            # Raster
                             if f.name.lower().endswith(('.tif', '.tiff')):
                                 png_path, bounds = process_raster_upload(f)
-                                if png_path and bounds:
-                                    st.session_state['ref_layers'][f.name] = {
-                                        'type': 'raster',
-                                        'data': png_path,
-                                        'bounds': bounds
-                                    }
-                            
-                            # KML/KMZ
+                                if png_path: st.session_state['ref_layers'][f.name] = {'type': 'raster', 'data': png_path, 'bounds': bounds}
                             elif f.name.lower().endswith(('.kml', '.kmz')):
                                 try:
-                                    # Geopandas needs 'fiona' with KML driver enabled mostly.
-                                    # Direct "read_file" can read KML if driver supported.
-                                    # For KMZ, it's a zip. We need to unzip or handle via fiona virtual filesystem.
-                                    # Simplest: Save to file, extract if KMZ, read with gpd.
-                                    
-                                    # Save temp
-                                    with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{f.name}") as tmp_kml:
-                                        tmp_kml.write(f.getbuffer())
-                                        kml_path = tmp_kml.name
-                                        
-                                    # Handle KMZ (Zip)
-                                    target_load_path = kml_path
-                                    if f.name.lower().endswith('.kmz'):
-                                        with zipfile.ZipFile(kml_path, 'r') as z:
-                                            # KMZ usually has a doc.kml inside
-                                            kml_files = [n for n in z.namelist() if n.endswith('.kml')]
-                                            if kml_files:
-                                                z.extract(kml_files[0], os.path.dirname(kml_path))
-                                                target_load_path = os.path.join(os.path.dirname(kml_path), kml_files[0])
-                                    
-                                    # Load with GeoPandas
-                                    # Forzar driver 'KML' si LIBKML falla o es ambiguo
-                                    try:
-                                        gdf_kml = gpd.read_file(target_load_path, driver='KML')
-                                    except:
-                                        # Fallback sin especificar driver
-                                        gdf_kml = gpd.read_file(target_load_path)
-                                    
+                                    with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{f.name}") as tmp:
+                                        tmp.write(f.getbuffer())
+                                        path = tmp.name
+                                    # Lógica básica KML
+                                    gdf_kml = gpd.read_file(path) # Puede fallar si no hay soporte, try/catch wrap
                                     if not gdf_kml.empty:
-                                       if gdf_kml.crs and gdf_kml.crs.to_string() != "EPSG:4326":
-                                           gdf_kml = gdf_kml.to_crs(epsg=4326)
-                                           
-                                       st.session_state['ref_layers'][f.name] = {
-                                            'type': 'vector',
-                                            'data': gdf_kml
-                                       }
-                                except Exception as e:
-                                    st.error(f"Error KML/KMZ {f.name}: {e}. (Asegúrate que GDAL soporte KML/LIBKML)")
+                                        if gdf_kml.crs and gdf_kml.crs.to_string() != "EPSG:4326": gdf_kml = gdf_kml.to_crs(epsg=4326)
+                                        st.session_state['ref_layers'][f.name] = {'type': 'vector', 'data': gdf_kml}
+                                except: pass 
 
-                        st.success(f"Referencias cargadas: {len(st.session_state['ref_layers'])}")
-
-        # B. Buscador y Zoom
-        st.divider()
-        st.markdown("### 🔍 Inspector y Zoom")
-        
-        # Filtrar solo vectores para búsqueda
-        vector_layers = {k:v for k,v in st.session_state['ref_layers'].items() if v['type'] == 'vector'}
-        
-        if vector_layers:
-            sel_layer_name = st.selectbox("Capa:", options=list(vector_layers.keys()))
-            if sel_layer_name:
-                gdf_search = vector_layers[sel_layer_name]['data']
-                cols = list(gdf_search.columns.drop('geometry'))
-                
-                sel_col = st.selectbox("Columna ID/Nombre:", options=cols, index=0 if cols else None)
-                
-                if sel_col:
-                    # Limitar valores para performance
-                    unique_vals = gdf_search[sel_col].astype(str).unique()
-                    sel_val = st.selectbox("Valor:", options=unique_vals)
-                    
-                    if st.button("📍 Ir al Objeto"):
-                        # Buscar geometría
-                        subset = gdf_search[gdf_search[sel_col].astype(str) == sel_val]
-                        if not subset.empty:
-                            geom = subset.geometry.iloc[0]
-                            # Bounds: minx, miny, maxx, maxy
-                            minx, miny, maxx, maxy = geom.bounds
-                            
-                            # Folium fit_bounds espera [[lat_min, lon_min], [lat_max, lon_max]]
-                            # que corresponde a [[miny, minx], [maxy, maxx]]
-                            bounds_to_fit = [[miny, minx], [maxy, maxx]]
-                            
-                            st.session_state['map_active_bounds'] = bounds_to_fit
-                            st.session_state['map_key'] += 1 # Forzar recarga mapa
-                            
-                            # Opcional: guardar geometría resaltada temporalmente
-                            st.session_state['search_highlight'] = geom.__geo_interface__
-                            
-                            st.rerun()
-        else:
-            st.caption("Sube shapefiles para buscar objetos.")
-            
-        # C. Gestión de Estilos (NUEVO)
-        st.divider()
-        with st.expander("🎨 Estilos y Colores", expanded=False):
-            st.markdown("#### Capa de Trabajo (Dibujo)")
-            # Color default azul
-            work_color = st.color_picker("Color Elementos", "#2563eb", key="picker_work")
-            st.session_state['style_work_color'] = work_color
+                        st.success(f"Capas: {len(st.session_state['ref_layers'])}")
             
             st.divider()
-            st.markdown("#### Capas de Referencia")
+            st.markdown("**Estilo Dibujo**")
+            work_color = st.color_picker("Color Dibujo", st.session_state.get('style_work_color', "#2563eb"))
+            st.session_state['style_work_color'] = work_color
+            
             if st.session_state['ref_layers']:
+                st.markdown("**Estilo Referencias**")
                 for name, layer in st.session_state['ref_layers'].items():
                     if layer['type'] == 'vector':
-                        # Default gray
-                        current_c = layer.get('color', '#555555')
-                        new_c = st.color_picker(f"Color: {name}", current_c, key=f"picker_{name}")
-                        if new_c != current_c:
-                            st.session_state['ref_layers'][name]['color'] = new_c
-                            st.session_state['map_key'] += 1 # Forzar recarga si cambia color
+                        current = layer.get('color', '#555555')
+                        new = st.color_picker(f"{name}", current)
+                        if new != current:
+                            st.session_state['ref_layers'][name]['color'] = new
+                            st.session_state['map_key'] += 1
                             st.rerun()
-            else:
-                st.caption("No hay capas de referencia.")
 
-
-        # D. Archivo de Trabajo y Tablas (Código existente, condensado visualmente)
-        st.divider()
-        with st.expander("💾 Configuración de Guardado"):
-            default_path = os.path.join(os.getcwd(), "mis_dibujos.geojson")
-            work_path = st.text_input("Ruta:", value=default_path)
-            
-            c1, c2 = st.columns(2)
-            if c1.button("🔄 Cargar"):
-                if os.path.exists(work_path):
-                    try:
-                        loaded_gdf = gpd.read_file(work_path)
-                        if loaded_gdf.crs and loaded_gdf.crs.to_string() != "EPSG:4326":
-                            loaded_gdf = loaded_gdf.to_crs(epsg=4326)
-                        st.session_state['work_gdf'] = loaded_gdf
-                        st.session_state['map_key'] += 1
-                        st.success(f"Cargado")
-                    except Exception as e: st.error(str(e))
-            
-            if c2.button("💾 Guardar"):
-                try:
-                    gdf_save = st.session_state['work_gdf'].copy()
-                    if work_path.endswith(".shp"):
-                        gdf_save.to_file(work_path)
-                    else:
-                        gdf_save.to_file(work_path, driver="GeoJSON")
-                    st.success("Guardado")
-                except Exception as e: st.error(str(e))
-
-        st.divider()
-        st.markdown("### 📝 Gestión de Campos")
-        new_col_name = st.text_input("Nombre de nueva columna")
-        new_col_type = st.selectbox("Tipo de dato", ["Texto", "Número Entero", "Número Decimal"])
-        
-        if st.button("➕ Agregar Columna"):
-            if new_col_name:
-                if new_col_name not in st.session_state['work_gdf'].columns:
-                    # Inicializar con valores nulos del tipo correcto si es posible, o None
-                    if new_col_type == "Número Entero":
-                         st.session_state['work_gdf'][new_col_name] = pd.Series(dtype='Int64') # Int64 soporta NaN
-                    elif new_col_type == "Número Decimal":
-                         st.session_state['work_gdf'][new_col_name] = pd.Series(dtype='float')
-                    else:
-                         st.session_state['work_gdf'][new_col_name] = None
-                         
-                    st.success(f"Columna '{new_col_name}' agregada.")
-                    st.rerun()
-                else:
-                    st.warning("Esa columna ya existe.")
-            else:
-                st.warning("Ingresa un nombre para la columna.")
+        # 3. BUSQUEDA
+        with st.expander("� Buscador", expanded=False):
+             vector_layers = {k:v for k,v in st.session_state['ref_layers'].items() if v['type'] == 'vector'}
+             if vector_layers:
+                sel_layer = st.selectbox("Capa", list(vector_layers.keys()))
+                if sel_layer:
+                    gdf_s = vector_layers[sel_layer]['data']
+                    cols_s = list(gdf_s.columns.drop('geometry'))
+                    col_id = st.selectbox("Campo", cols_s)
+                    if col_id:
+                        val = st.selectbox("Valor", gdf_s[col_id].astype(str).unique())
+                        if st.button("� Localizar"):
+                             subset = gdf_s[gdf_s[col_id].astype(str) == val]
+                             if not subset.empty:
+                                 geom = subset.geometry.iloc[0]
+                                 minx, miny, maxx, maxy = geom.bounds
+                                 st.session_state['map_active_bounds'] = [[miny, minx], [maxy, maxx]]
+                                 st.session_state['map_key'] += 1
+                                 st.session_state['search_highlight'] = geom.__geo_interface__
+                                 st.rerun()
+             else:
+                 st.caption("Carga capas para buscar.")
 
 
     # --- ZONA PRINCIPAL ---
@@ -386,6 +385,10 @@ def main():
     
     if 'Seleccionar' not in st.session_state['work_gdf'].columns:
         st.session_state['work_gdf'].insert(0, 'Seleccionar', False)
+    
+    # Estado temporal para la vista (evita reset al mover el mapa)
+    if 'last_view' not in st.session_state:
+        st.session_state['last_view'] = {'center': None, 'zoom': None}
         
     # Crear mapa
     m = folium.Map(
@@ -393,6 +396,15 @@ def main():
         zoom_start=st.session_state.get('map_zoom', 10), 
         tiles="CartoDB positron"
     )
+    
+    # Adicionar Capa Satelital (Esri World Imagery)
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attr='Esri',
+        name='Satelite',
+        overlay=False,
+        control=True
+    ).add_to(m)
     
     # Aplicar Zoom
     if 'map_active_bounds' in st.session_state:
@@ -419,7 +431,8 @@ def main():
             folium.GeoJson(
                 layer['data'], name=f"Ref: {name}",
                 style_function=lambda x, col=layer_color: {'color': col, 'weight': 1, 'fillOpacity': 0.1},
-                tooltip=folium.GeoJsonTooltip(fields=tooltip_fields) if tooltip_fields else None
+                tooltip=folium.GeoJsonTooltip(fields=tooltip_fields) if tooltip_fields else None,
+                popup=folium.GeoJsonPopup(fields=valid_tooltip_cols, localize=True) if valid_tooltip_cols else None
             ).add_to(m)
         elif layer['type'] == 'raster':
             folium.raster_layers.ImageOverlay(
@@ -447,6 +460,16 @@ def main():
                 marker=folium.CircleMarker(radius=6, fill_color='#ef4444', fill_opacity=0.9, color='black', weight=2)
             ).add_to(m)
 
+    # DIBUJOS PENDIENTES (Visualización Persistente)
+    pending = st.session_state.get('pending_drawings', [])
+    if pending:
+        folium.GeoJson(
+            {"type": "FeatureCollection", "features": pending},
+            name="Dibujos en Espera",
+            style_function=lambda x: {'color': '#f59e0b', 'weight': 3, 'dashArray': '5, 5', 'fillOpacity': 0.2},
+            tooltip="Elemento no guardado"
+        ).add_to(m)
+
     # DIBUJO
     draw = Draw(
         export=False, position='topleft',
@@ -460,45 +483,99 @@ def main():
     folium.LayerControl().add_to(m)
     
     # RENDER ST_FOLIUM
-    # Quitamos returned_objects restringidos para máxima estabilidad
-    # Priorizamos que funcione.
+    # Restringimos returned_objects para evitar recargas excesivas al mover el mapa (bounds, etc).
     output = st_folium(
         m, width="100%", height=500, 
         key=f"map_{st.session_state['map_key']}",
-        # No especificamos returned_objects para que traiga todo por defecto y sea más estable
+        returned_objects=["all_drawings", "zoom", "center"]
     )
     
-    # Persistir Vista
+    # Persistir Vista (Solo en memoria temporal, NO en el state que reinicia el mapa)
     if output:
         if "center" in output and output["center"]:
-             st.session_state['map_center'] = [output["center"]["lat"], output["center"]["lng"]]
+             st.session_state['last_view']['center'] = [output["center"]["lat"], output["center"]["lng"]]
         if "zoom" in output and output["zoom"]:
-             st.session_state['map_zoom'] = output["zoom"]
+             st.session_state['last_view']['zoom'] = output["zoom"]
 
-    # INCORPORACIÓN DIRECTA
+    # LOGICA DE CAPTURA ROBUSTA
     if output and "all_drawings" in output:
-        features = []
-        if isinstance(output["all_drawings"], list): features = output["all_drawings"]
-        elif isinstance(output["all_drawings"], dict) and "features" in output["all_drawings"]: features = output["all_drawings"]["features"]
+        out_drawings = output["all_drawings"]
         
-        if features:
-            st.info(f"📍 {len(features)} objeto(s) nuevo(s) detectado(s).")
-            # Botón simple y directo
-            if st.button("Guardar en Tabla", type="primary"):
-                try:
-                    new_gdf = gpd.GeoDataFrame.from_features(features, crs="EPSG:4326")
-                    # Alinear columnas
-                    for col in st.session_state['work_gdf'].columns:
-                        if col not in new_gdf.columns and col != 'geometry':
-                            new_gdf[col] = False if col == 'Seleccionar' else None
-                    
-                    # Concatenar
-                    st.session_state['work_gdf'] = pd.concat([st.session_state['work_gdf'], new_gdf], ignore_index=True)
-                    st.session_state['map_key'] += 1
-                    st.success("Guardado ok")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error al guardar: {e}")
+        # Normalizar a lista de features
+        features_captured = []
+        if isinstance(out_drawings, list): 
+            features_captured = out_drawings
+        elif isinstance(out_drawings, dict) and "features" in out_drawings: 
+            features_captured = out_drawings["features"]
+        
+        if features_captured:
+            # Estrategia: "Acumular y Limpiar"
+            # Capturamos lo nuevo, lo agregamos a pending, y forzamos rerun.
+            # Al hacer rerun, el mapa se regenera (Draw vacío) y mostramos los items como GeoJson fijo.
+            
+            import json
+            current_pending = st.session_state.get('pending_drawings', [])
+            
+            # Deduplicación básica usando GeoJSON string
+            # (El cliente puede devolver lo mismo si no hubo reset, evitamos duplicados)
+            existing_geoms = {json.dumps(f['geometry'], sort_keys=True) for f in current_pending}
+            
+            added_count = 0
+            for f in features_captured:
+                f_geom_str = json.dumps(f['geometry'], sort_keys=True)
+                if f_geom_str not in existing_geoms:
+                    current_pending.append(f)
+                    existing_geoms.add(f_geom_str)
+                    added_count += 1
+            
+            if added_count > 0:
+                st.session_state['pending_drawings'] = current_pending
+                
+                # Sincronizar vista para que no se resetee al redibujar el mapa
+                if st.session_state['last_view']['center']:
+                     st.session_state['map_center'] = st.session_state['last_view']['center']
+                if st.session_state['last_view']['zoom']:
+                     st.session_state['map_zoom'] = st.session_state['last_view']['zoom']
+                
+                st.rerun()
+
+    # MENU DE GUARDADO (Si hay pendientes)
+    final_features = st.session_state.get('pending_drawings', [])
+    if final_features:
+        st.info(f"📍 {len(final_features)} objeto(s) en espera de ser guardados en la tabla.")
+        
+        c_save, c_clear = st.columns([1, 4])
+        if c_save.button("Guardar en Tabla", type="primary"):
+            try:
+                new_gdf = gpd.GeoDataFrame.from_features(final_features, crs="EPSG:4326")
+                # Alinear columnas
+                for col in st.session_state['work_gdf'].columns:
+                    if col not in new_gdf.columns and col != 'geometry':
+                         # Inicializar vacíos. Cuidado con tipos.
+                        new_gdf[col] = False if col == 'Seleccionar' else None
+                
+                # Concatenar
+                st.session_state['work_gdf'] = pd.concat([st.session_state['work_gdf'], new_gdf], ignore_index=True)
+                
+                # Sincronizar vista antes de recargar
+                if st.session_state['last_view']['center']:
+                     st.session_state['map_center'] = st.session_state['last_view']['center']
+                if st.session_state['last_view']['zoom']:
+                     st.session_state['map_zoom'] = st.session_state['last_view']['zoom']
+
+                st.session_state['map_key'] += 1
+                
+                # Limpiar pendientes tras guardar
+                st.session_state['pending_drawings'] = []
+                
+                st.success("Guardado ok")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error al guardar: {e}")
+        
+        if c_clear.button("🗑️ Descartar Pendientes"):
+             st.session_state['pending_drawings'] = []
+             st.rerun()
 
     # TABLA (Abajo)
     st.divider()
@@ -510,30 +587,14 @@ def main():
         edited_df = st.data_editor(
             st.session_state['work_gdf'][cols],
             num_rows="dynamic", 
-            use_container_width=True, 
+            use_container_width=True,
             key="data_editor",
-            column_config={"Seleccionar": st.column_config.CheckboxColumn("Ver", width="small")}
+            column_config={"Seleccionar": st.column_config.CheckboxColumn("Ver", width="small")},
+            on_change=handle_table_edit
         )
         
-        # Sincronización simple
-        if not edited_df.equals(st.session_state['work_gdf'][cols]):
-            try:
-                # Update básico de valores
-                for col in edited_df.columns:
-                     st.session_state['work_gdf'][col] = edited_df[col]
-                
-                # Handling borrar filas (Longitud diferente)
-                if len(edited_df) != len(st.session_state['work_gdf']):
-                     # Si es menor, asumimos borrado y reasignamos por index del editor
-                     if len(edited_df) < len(st.session_state['work_gdf']):
-                         st.session_state['work_gdf'] = st.session_state['work_gdf'].iloc[edited_df.index].reset_index(drop=True)
-                     # Si es mayor (agregado manual), cuidado, no tiene geometry.
-                
-                # Check highlight
-                if not edited_df['Seleccionar'].equals(st.session_state['work_gdf'][cols]['Seleccionar']):
-                     st.session_state['map_key'] += 1
-                     st.rerun()
-            except: pass
+        # Sincronización manejada por callback 'handle_table_edit' para evitar doble refresco y perdida de foco.
+        pass
     else:
         st.info("No hay datos aún.")
 
