@@ -161,18 +161,19 @@
     </div>
 
     <!-- Botón Flotante para abrir Tabla -->
+    <!-- Botón Flotante para abrir Tabla (Grande y Desplazado) -->
     <button onclick="toggleBottomPanel()"
-        class="absolute bottom-4 right-4 z-[900] bg-white p-3 rounded-full shadow-lg hover:bg-slate-50 text-slate-700 transition"
-        title="Abrir Tabla">
-        <i class="fa-solid fa-table-list"></i>
+        class="absolute bottom-8 right-24 z-[900] w-16 h-16 bg-indigo-600 text-white rounded-full shadow-2xl hover:bg-indigo-700 hover:scale-110 active:scale-95 transition-all duration-300 flex items-center justify-center border-4 border-white/20"
+        title="Abrir Tabla de Atributos">
+        <i class="fa-solid fa-table-list text-2xl"></i>
     </button>
 
     <!-- Contenedor Mapa -->
     <div id="map" class="h-full w-full bg-slate-200 z-0"></div>
 
     <!-- JS Principal -->
-    <script src="table_logic.js"></script>
     <script src="app.js"></script>
+    <script src="table_logic.js"></script>
 </body>
 
 </html>

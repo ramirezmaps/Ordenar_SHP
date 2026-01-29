@@ -35,25 +35,74 @@
 }
 
 /* Geoman Toolbar Customization */
-/* Solución Robusta: Bajar todo el contenedor de controles de la izquierda */
+/* Solución Robusta: Bajar todo el contenedor de controles de la izquierda y separarlo del borde */
 .leaflet-top.leaflet-left {
-    margin-top: 60px !important;
+    margin-top: 80px !important;
+    /* Más abajo para no chocar con título */
+    margin-left: 15px !important;
+    /* Separado del borde izquierdo */
 }
 
+/* Botones de Dibujo: Estilo GIS/CAD "Pro" (QGIS/AutoCAD) */
+.leaflet-pm-toolbar .leaflet-buttons-control-button {
+    width: 32px !important;
+    /* Tamaño clásico de barra de herramientas de escritorio */
+    height: 32px !important;
+    line-height: 32px !important;
+    font-size: 15px !important;
+    color: #333 !important;
+    /* Negro técnico */
+    background-color: #f8f9fa;
+    /* Gris muy claro */
+    border: 1px solid #cbd5e1 !important;
+    /* Borde definido para cada botón */
+    margin-bottom: -1px;
+    /* Colapsar bordes duplicados */
+    margin-right: -1px;
+    border-radius: 0 !important;
+    /* Cuadrados (CAD Style) */
+    transition: all 0.1s;
+}
+
+/* Estado Activo/Seleccionado (Importante para saber qué herramienta usas) */
+.leaflet-pm-toolbar .leaflet-buttons-control-button.active {
+    background-color: #e2e8f0 !important;
+    color: #0f172a !important;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.06);
+}
+
+/* Efecto Hover Técnico */
+.leaflet-pm-toolbar .leaflet-buttons-control-button:hover {
+    background-color: #e2e8f0 !important;
+    color: #000 !important;
+    z-index: 10;
+    /* Traer al frente para ver borde completo */
+}
+
+/* Contenedor Toolbar */
 .leaflet-pm-toolbar {
     border: none !important;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1) !important;
+    background: transparent !important;
+    display: flex;
+    flex-direction: column;
+    /* Apilar verticalmente como paleta de herramientas */
 }
+
+
 
 .leaflet-pm-actions-container {
     background-color: #1e293b !important;
-    /* Dark slate */
     border-radius: 6px !important;
+    margin-left: 10px !important;
 }
 
 .leaflet-pm-action {
     color: white !important;
     font-family: sans-serif !important;
+    padding: 0 15px !important;
+    /* Botones de acción más anchos */
+    line-height: 44px !important;
 }
 
 .leaflet-pm-action:hover {

@@ -39,6 +39,40 @@ const tiles = {
 tiles["Google Satélite"].addTo(map);
 L.control.layers(tiles, null, { position: 'bottomleft' }).addTo(map);
 
+// --- CONTROLES "PRO" (GIS STANDARD) ---
+
+// 1. Escala (Métrica / Imperial)
+L.control.scale({ imperial: false, maxWidth: 200, position: 'bottomright' }).addTo(map);
+
+// 2. Coordenadas del Mouse (Custom Control)
+const CoordControl = L.Control.extend({
+    options: { position: 'bottomleft' },
+    onAdd: function (map) {
+        const div = L.DomUtil.create('div', 'leaflet-bar leaflet-control leaflet-control-custom');
+        div.style.backgroundColor = 'rgba(255, 255, 255, 0.9)';
+        div.style.padding = '4px 10px';
+        div.style.borderRadius = '4px';
+        div.style.boxShadow = '0 1px 4px rgba(0,0,0,0.3)';
+        div.style.fontSize = '11px';
+        div.style.fontFamily = 'monospace';
+        div.style.color = '#334155';
+        div.style.marginBottom = '25px'; // Separar del borde
+        div.style.marginLeft = '10px';
+        div.id = 'mouse-coords';
+        div.innerHTML = 'Lat: - | Lng: -';
+        return div;
+    }
+});
+map.addControl(new CoordControl());
+
+// Evento movimiento mouse
+map.on('mousemove', function (e) {
+    const el = document.getElementById('mouse-coords');
+    if (el) {
+        el.innerHTML = `Lat: <b>${e.latlng.lat.toFixed(5)}</b> | Lng: <b>${e.latlng.lng.toFixed(5)}</b> | Zoom: <b>${map.getZoom()}</b>`;
+    }
+});
+
 
 // --- CAPA DE DIBUJO (WORK LAYER) ---
 // Aquí es donde el usuario dibuja. Es una FeatureGroup editable.
@@ -48,25 +82,83 @@ const workLayer = new L.FeatureGroup().addTo(map);
 // --- CONFIGURACIÓN GEOMAN (HERRAMIENTAS DE DIBUJO) ---
 map.pm.addControls({
     position: 'topleft',
-    drawCircle: false,      // Simplificar 
+    drawCircle: false,
     drawCircleMarker: false,
     drawText: false,
     drawRectangle: true,
     drawPolygon: true,
     drawPolyline: true,
     drawMarker: true,
-    cutPolygon: true,       // Herramienta Pro: Cortar
-    rotateMode: true,       // Herramienta Pro: Rotar
+    cutPolygon: true,
+    rotateMode: true,
     editMode: true,
     dragMode: true,
     removalMode: true
 });
 
 map.pm.setGlobalOptions({
-    layerGroup: workLayer, // Todo lo que se dibuje va a esta capa
-    snappable: true,       // SNAPPING ACTIVADO!
+    layerGroup: workLayer,
+    snappable: true,
     snapDistance: 20,
-    allowSelfIntersection: false
+    allowSelfIntersection: false,
+    continueDrawing: true,
+    // [NUEVO] Mediciones en vivo (GIS Pro)
+    tooltips: true,
+    measurements: { measurement: true }
+});
+
+// 3. Botón Home (Reset Vista)
+const HomeControl = L.Control.Zoom.extend({
+    options: { position: 'bottomright' },
+    onAdd: function (map) {
+        const btn = L.DomUtil.create('button', 'leaflet-bar leaflet-control leaflet-control-custom');
+        btn.innerHTML = '<i class="fa-solid fa-house"></i>';
+        btn.style.width = '30px';
+        btn.style.height = '30px';
+        btn.style.backgroundColor = 'white';
+        btn.style.border = 'none';
+        btn.style.cursor = 'pointer';
+        btn.style.borderRadius = '4px';
+        btn.style.boxShadow = '0 1px 4px rgba(0,0,0,0.3)';
+        btn.style.color = '#333';
+        btn.style.fontSize = '14px';
+        btn.title = 'Vista Inicial';
+
+        btn.onclick = () => {
+            map.setView(mapConfig.center, mapConfig.zoom);
+        };
+        return btn;
+    }
+});
+map.addControl(new HomeControl());
+
+
+// --- CAPA DE DIBUJO (WORK LAYER) ---
+// --- CONFIGURACIÓN GEOMAN (HERRAMIENTAS DE DIBUJO) ---
+map.pm.addControls({
+    position: 'topleft',
+    drawCircle: false,
+    drawCircleMarker: false,
+    drawText: false,
+    drawRectangle: true,
+    drawPolygon: true,
+    drawPolyline: true,
+    drawMarker: true,
+    cutPolygon: true,
+    rotateMode: true,
+    editMode: true,
+    dragMode: true,
+    removalMode: true
+});
+
+map.pm.setGlobalOptions({
+    layerGroup: workLayer,
+    snappable: true,
+    snapDistance: 20,
+    allowSelfIntersection: false,
+    continueDrawing: true,
+    tooltips: true,
+    measurements: { measurement: true }
 });
 
 // Eventos de Creación
@@ -80,10 +172,13 @@ map.on('pm:create', (e) => {
         layer.feature.properties = layer.feature.properties || { id: Date.now(), nombre: "Nuevo Elemento" };
     }
 
+    // Auto-Calcular Geometría Básica (Si es posible)
+    if (typeof updateGeometryProperties === 'function') updateGeometryProperties(layer);
+
     // Agregar al grupo de trabajo
     workLayer.addLayer(layer);
 
-    // Setup eventos clic para editar
+    // Setup eventos clic y contextmenu
     setupLayerEvents(layer);
 
     // Feedback visual
@@ -94,6 +189,10 @@ map.on('pm:create', (e) => {
 });
 
 
+
+
+
+
 // --- GESTIÓN DE CAPAS Y PROPIEDADES ---
 
 // Referencias (Capas subidas que NO se editan, solo referencia)
@@ -101,9 +200,92 @@ const referenceLayers = {};
 
 function setupLayerEvents(layer) {
     layer.on('click', (e) => {
-        L.DomEvent.stopPropagation(e); // Evitar click en mapa
+        L.DomEvent.stopPropagation(e);
         selectFeature(e.target);
     });
+
+    // Menu Contextual (Click Derecho)
+    layer.on('contextmenu', (e) => {
+        L.DomEvent.stopPropagation(e);
+
+        Swal.fire({
+            title: 'Opciones',
+            html: `
+                <button onclick="zoomToFeature('${layer._leaflet_id}')" class="swal2-confirm swal2-styled mb-2" style="background:#3b82f6; display:block; width:100%;">Zoom <i class="fa-solid fa-magnifying-glass"></i></button>
+                <button onclick="selectFeatureInTable('${layer._leaflet_id}')" class="swal2-confirm swal2-styled mb-2" style="background:#10b981; display:block; width:100%;">Editar <i class="fa-solid fa-pen"></i></button>
+                <button onclick="deleteFeature('${layer._leaflet_id}')" class="swal2-deny swal2-styled" style="background:#ef4444; display:block; width:100%;">Eliminar <i class="fa-solid fa-trash"></i></button>
+            `,
+            showConfirmButton: false,
+            showCloseButton: true,
+            width: 250,
+            padding: '1em',
+            target: document.getElementById('map') // Render dentro del mapa
+        });
+    });
+
+    // Tooltip al pasar el mouse (sticky: sigue al puntero)
+    if (layer.feature && layer.feature.properties) {
+        layer.bindTooltip(getTooltipContent(layer.feature.properties), {
+            sticky: true,
+            direction: 'top',
+            className: 'bg-white px-2 py-1 border border-gray-200 shadow-lg rounded text-xs font-sans'
+        });
+    }
+}
+
+// Helpers globales para el Swal (necesitan ser globales para el onclick string)
+window.zoomToFeature = (id) => {
+    const l = workLayer.getLayer(id);
+    if (l) map.flyToBounds(l.getBounds ? l.getBounds() : l.getLatLng().toBounds(100), { maxZoom: 18 });
+    Swal.close();
+};
+
+window.deleteFeature = (id) => {
+    const l = workLayer.getLayer(id);
+    if (l) {
+        workLayer.removeLayer(l);
+        updateLayerList();
+        if (selectedLayer === l) closeInspector();
+    }
+    Swal.close();
+};
+window.selectFeatureInTable = (id) => {
+    const l = workLayer.getLayer(id);
+    if (l) {
+        selectFeature(l);
+        if (!isTableOpen) toggleBottomPanel();
+    }
+    Swal.close();
+};
+
+function updateGeometryProperties(layer) {
+    // Calculo simple de area/longitud si no existe
+    // Nota: Esto es aproximado sin Turf.js, pero sirve de referencia UX
+    if (layer instanceof L.Polygon) {
+        // Calcular Area aprox
+        // Dejamos pendiente implementación robusta de área
+    }
+}
+
+function getTooltipContent(props) {
+    if (!props) return "Sin datos";
+
+    // Filtramos llaves de estilo y sistema
+    const ignore = ['stroke', 'stroke-width', 'stroke-opacity', 'fill', 'fill-opacity', 'marker-color', 'marker-symbol', '_leaflet_id', 'id'];
+
+    let html = '<div class="text-left">';
+    let hasContent = false;
+
+    for (const [key, val] of Object.entries(props)) {
+        if (ignore.includes(key)) continue;
+        html += `<div class="mb-0.5"><span class="font-bold text-slate-600">${key}:</span> <span class="text-slate-800">${val}</span></div>`;
+        hasContent = true;
+    }
+
+    if (!hasContent) return '<span class="italic text-gray-400">Sin atributos</span>';
+
+    html += '</div>';
+    return html;
 }
 
 // Variables estado selección
@@ -139,10 +321,49 @@ function closeInspector() {
     const p = document.getElementById('inspectorWidget');
     if (p) p.classList.add('translate-x-[150%]');
 
-    // Deseleccionar visualmente también? Opcional
+    // Deseleccionar visualmente
     if (selectedLayer && workLayer.hasLayer(selectedLayer)) {
-        selectedLayer.setStyle({ color: '#3388ff', weight: 3 });
+        if (typeof applyStyle === 'function') applyStyle(selectedLayer); // Restaurar estilo real
+        else selectedLayer.setStyle({ color: '#3388ff', weight: 3 });
         selectedLayer = null;
+    }
+}
+
+
+function applyStyle(layer) {
+    if (!layer.feature || !layer.feature.properties) return;
+    const p = layer.feature.properties;
+
+    // Estilos por defecto (SimpleStyle Spec)
+    const style = {
+        color: p.stroke || '#3388ff',
+        weight: typeof p['stroke-width'] === 'number' ? p['stroke-width'] : 3,
+        opacity: typeof p['stroke-opacity'] === 'number' ? p['stroke-opacity'] : 1,
+        fillColor: p.fill || '#3388ff',
+        fillOpacity: typeof p['fill-opacity'] === 'number' ? p['fill-opacity'] : 0.2,
+        dashArray: null
+    };
+
+    if (layer instanceof L.Marker) {
+        // Lógica para Marcadores (Iconos)
+        const markerColor = p['marker-color'] || '#3388ff';
+        const iconName = p['marker-symbol'] || 'location-dot';
+
+        if (p['marker-color'] || p['marker-symbol']) {
+            const iconHtml = `<div style="color: ${markerColor}; text-shadow: 2px 2px 4px rgba(0,0,0,0.3); font-size: 34px; text-align: center;">
+                            <i class="fa-solid fa-${iconName}"></i>
+                          </div>`;
+
+            layer.setIcon(L.divIcon({
+                html: iconHtml,
+                className: 'custom-fa-marker',
+                iconSize: [42, 42],
+                iconAnchor: [21, 21]
+            }));
+        }
+    } else {
+        // Polígonos y Líneas
+        layer.setStyle(style);
     }
 }
 
@@ -151,10 +372,17 @@ function renderInspector(layer) {
     const container = document.getElementById('inspectorPanel');
     const saveBtn = document.getElementById('saveAttributesBtn');
 
-    let html = `<div class="grid gap-3">`;
+    // --- SECCIÓN 1: DATOS (ATRIBUTOS) ---
+    let html = `<div class="mb-4">
+        <h4 class="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2 border-b pb-1">Datos</h4>
+        <div class="grid gap-3">`;
 
-    // Generar inputs dinámicos para cada propiedad
+    // Filtrar propiedades de estilo para no mostrarlas en la lista de datos "raw"
+    const styleKeys = ['stroke', 'stroke-width', 'stroke-opacity', 'fill', 'fill-opacity', 'marker-color', 'marker-symbol', '_leaflet_id'];
+
     for (const [key, val] of Object.entries(props)) {
+        if (styleKeys.includes(key)) continue; // Ocultar estilos de la edición de datos
+
         html += `
             <div>
                 <label class="block text-xs font-bold text-gray-500 mb-1">${key}</label>
@@ -163,42 +391,102 @@ function renderInspector(layer) {
             </div>
         `;
     }
-
-    // Botón para agregar nueva propiedad
     html += `
-        <div class="mt-2 pt-2 border-t border-gray-100">
-            <button onclick="addNewField()" class="text-xs text-blue-600 hover:text-blue-800 font-medium">
-                <i class="fa-solid fa-plus"></i> Agregar Campo
-            </button>
-        </div>
-    </div>`;
+        <button onclick="addNewField()" class="mt-2 text-xs text-blue-600 hover:text-blue-800 font-medium">
+            <i class="fa-solid fa-plus"></i> Agregar Campo
+        </button>
+    </div></div>`;
+
+
+    // --- SECCIÓN 2: ESTILO VISUAL ---
+    html += `<div class="mb-2 pt-2 border-t border-gray-100">
+        <h4 class="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Estilo Visual</h4>
+        <div class="grid grid-cols-2 gap-3 text-sm">`;
+
+    if (layer instanceof L.Marker) {
+        // PUNTOS
+        html += `
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">Color</label>
+                <input type="color" data-style="marker-color" value="${props['marker-color'] || '#3388ff'}" class="style-input w-full h-8 rounded cursor-pointer">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">Icono</label>
+                <select data-style="marker-symbol" class="style-input w-full bg-white border border-gray-200 rounded px-2 py-1 h-8 focus:outline-none text-xs">
+                    <option value="location-dot" ${props['marker-symbol'] === 'location-dot' ? 'selected' : ''}>📍 Pin</option>
+                    <option value="circle" ${props['marker-symbol'] === 'circle' ? 'selected' : ''}>⚫ Círculo</option>
+                    <option value="square" ${props['marker-symbol'] === 'square' ? 'selected' : ''}>⬛ Cuadrado</option>
+                    <option value="star" ${props['marker-symbol'] === 'star' ? 'selected' : ''}>⭐ Estrella</option>
+                    <option value="house" ${props['marker-symbol'] === 'house' ? 'selected' : ''}>🏠 Casa</option>
+                    <option value="tree" ${props['marker-symbol'] === 'tree' ? 'selected' : ''}>🌲 Árbol</option>
+                    <option value="car" ${props['marker-symbol'] === 'car' ? 'selected' : ''}>🚗 Auto</option>
+                    <option value="play" ${props['marker-symbol'] === 'play' ? 'selected' : ''}>▶️ Play</option>
+                </select>
+            </div>
+        `;
+    } else {
+        // LÍNEAS y POLÍGONOS
+        html += `
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">Borde</label>
+                <input type="color" data-style="stroke" value="${props.stroke || '#3388ff'}" class="style-input w-full h-8 rounded cursor-pointer">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">Relleno</label>
+                <input type="color" data-style="fill" value="${props.fill || '#3388ff'}" class="style-input w-full h-8 rounded cursor-pointer">
+            </div>
+            <div class="col-span-2">
+                <label class="block text-xs text-gray-500 mb-1">Transparencia Relleno</label>
+                <input type="range" data-style="fill-opacity" min="0" max="1" step="0.1" value="${props['fill-opacity'] !== undefined ? props['fill-opacity'] : 0.2}" class="style-input w-full accent-blue-600">
+            </div>
+            <div class="col-span-2">
+                <label class="block text-xs text-gray-500 mb-1">Grosor Línea</label>
+                <input type="range" data-style="stroke-width" min="1" max="10" step="1" value="${props['stroke-width'] || 3}" class="style-input w-full accent-blue-600">
+            </div>
+        `;
+    }
+    html += `</div></div>`;
 
     container.innerHTML = html;
     saveBtn.classList.remove('hidden');
+
+    document.querySelectorAll('.style-input').forEach(input => {
+        input.addEventListener('input', () => saveActiveAttributes(true));
+    });
 }
 
-function saveActiveAttributes() {
+function saveActiveAttributes(silent = false) {
     if (!selectedLayer) return;
 
-    const inputs = document.querySelectorAll('.prop-input');
-    const newProps = {};
+    const newProps = { ...selectedLayer.feature.properties };
 
-    inputs.forEach(input => {
-        const key = input.dataset.key;
-        newProps[key] = input.value;
+    // 1. Guardar Datos
+    document.querySelectorAll('.prop-input').forEach(input => {
+        newProps[input.dataset.key] = input.value;
     });
 
-    // Actualizar feature
-    if (!selectedLayer.feature) selectedLayer.feature = {};
+    // 2. Guardar Estilos
+    document.querySelectorAll('.style-input').forEach(input => {
+        let val = input.value;
+        if (input.type === 'range') val = parseFloat(val);
+        newProps[input.dataset.style] = val;
+    });
+
     selectedLayer.feature.properties = newProps;
+    applyStyle(selectedLayer); // Visual
 
-    // Feedback
-    Swal.fire({
-        toast: true, position: 'top-end', icon: 'success',
-        title: 'Guardado', showConfirmButton: false, timer: 1500
-    });
+    // Actualizar Tooltip con los nuevos datos
+    if (selectedLayer.setTooltipContent) {
+        selectedLayer.setTooltipContent(getTooltipContent(newProps));
+    }
 
-    // Sync tabla si está abierta
+    if (!silent) {
+        Swal.fire({
+            toast: true, position: 'top-end', icon: 'success',
+            title: 'Guardado', showConfirmButton: false, timer: 1500
+        });
+    }
+
     if (typeof isTableOpen !== 'undefined' && isTableOpen) initAttributeTable();
 }
 
@@ -334,19 +622,63 @@ function addReferenceLayer(geojsonData, name) {
     const layer = L.geoJSON(geojsonData, {
         style: { color: color, weight: 2, fillOpacity: 0.2 },
         onEachFeature: (feature, l) => {
-            // Bind tooltips
+            // Bind tooltips (Smart: try to find 'name' or 'etiqueta' first)
             if (feature.properties) {
-                const keys = Object.keys(feature.properties);
-                if (keys.length > 0) l.bindTooltip(String(feature.properties[keys[0]]));
+                const props = feature.properties;
+                const label = props.name || props.nombre || props.etiqueta || Object.values(props)[0];
+                if (label) l.bindTooltip(String(label), { sticky: true });
             }
         }
     }).addTo(map);
 
+    // Guardar referencia extra para color
+    layer._customColor = color;
+
     referenceLayers[name] = layer;
     updateLayerList();
 
-    // Zoom to layer
     map.fitBounds(layer.getBounds());
+}
+
+function updateLayerColor(name, newColor) {
+    const layer = referenceLayers[name];
+    if (layer) {
+        layer.setStyle({ color: newColor, fillColor: newColor });
+        layer._customColor = newColor;
+    }
+}
+
+function searchInLayer(name, query) {
+    const layer = referenceLayers[name];
+    if (!layer || !query) return;
+
+    const normalize = (str) => String(str).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const q = normalize(query);
+
+    let found = null;
+
+    layer.eachLayer(l => {
+        if (found) return; // Solo buscar el primero por ahora o resaltar todos
+        if (l.feature && l.feature.properties) {
+            // Buscar en todos los valores
+            const match = Object.values(l.feature.properties).some(val => normalize(val).includes(q));
+            if (match) found = l;
+        }
+    });
+
+    if (found) {
+        if (found.getBounds) map.flyToBounds(found.getBounds(), { maxZoom: 18 });
+        else map.flyTo(found.getLatLng(), 18);
+
+        found.openTooltip(); // Mostrar etiqueta
+
+        // Highlight temporal
+        const originalStyle = { color: layer._customColor, weight: 2 };
+        found.setStyle({ color: '#facc15', weight: 5 }); // Amarillo
+        setTimeout(() => found.setStyle(originalStyle), 3000);
+    } else {
+        Swal.fire({ toast: true, position: 'top-end', icon: 'info', title: 'No encontrado', timer: 2000, showConfirmButton: false });
+    }
 }
 
 function addEditLayer(geojsonData) {
@@ -396,20 +728,130 @@ function updateLayerList() {
     // 2. Capas de Referencia
     for (const [name, layer] of Object.entries(referenceLayers)) {
         list.innerHTML += `
-        <div class="flex items-center justify-between p-2 bg-gray-50 rounded border border-gray-100">
-            <div class="flex items-center gap-2 truncate">
-                <i class="fa-solid fa-layer-group text-gray-400"></i>
-                <span class="text-sm text-slate-600 truncate max-w-[150px]" title="${name}">${name}</span>
+        <div class="p-2 bg-gray-50 rounded border border-gray-100 flex flex-col gap-2 relative">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2 truncate">
+                    <input type="color" value="${layer._customColor || '#3388ff'}" 
+                           class="w-4 h-4 rounded cursor-pointer border-none p-0 overflow-hidden" 
+                           onchange="updateLayerColor('${name}', this.value)" title="Cambiar Color">
+                    <span class="text-sm text-slate-700 font-medium truncate max-w-[140px]" title="${name}">${name}</span>
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="zoomToRef('${name}')" class="text-gray-400 hover:text-blue-500" title="Zoom Global">
+                        <i class="fa-solid fa-earth-americas"></i>
+                    </button>
+                    <button onclick="removeRefLayer('${name}')" class="text-gray-300 hover:text-red-500" title="Eliminar">
+                        <i class="fa-solid fa-trash"></i>
+                    </button>
+                </div>
             </div>
-            <div class="flex gap-2">
-                <button onclick="zoomToRef('${name}')" class="text-gray-400 hover:text-gray-600" title="Zoom">
-                    <i class="fa-solid fa-magnifying-glass-location"></i>
-                </button>
-                <button onclick="removeRefLayer('${name}')" class="text-red-300 hover:text-red-500" title="Eliminar">
-                    <i class="fa-solid fa-trash"></i>
-                </button>
+            
+            <!-- Buscador interno con Autocompletado -->
+            <div class="relative">
+                 <input type="text" placeholder="Buscar..." 
+                        class="w-full text-xs border border-gray-200 rounded px-2 py-1 focus:outline-none focus:border-blue-400"
+                        oninput="updateSearchSuggestions('${name}', this.value, this)">
+                 
+                 <!-- Lista de Sugerencias -->
+                 <ul id="suggestions-${name.replace(/\s+/g, '-')}" 
+                     class="hidden absolute left-0 right-0 top-full mt-1 bg-white border border-gray-100 shadow-xl rounded z-50 max-h-40 overflow-y-auto text-xs">
+                 </ul>
             </div>
         </div>`;
+    }
+}
+
+// Lógica Autocompletado
+function updateSearchSuggestions(name, query, input) {
+    const listId = `suggestions-${name.replace(/\s+/g, '-')}`;
+    const listEl = document.getElementById(listId);
+    if (!listEl) return;
+
+    if (!query || query.length < 2) {
+        listEl.classList.add('hidden');
+        listEl.innerHTML = '';
+        return;
+    }
+
+    const layer = referenceLayers[name];
+    if (!layer) return;
+
+    const normalize = (str) => String(str).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const q = normalize(query);
+    const matches = [];
+
+    layer.eachLayer(l => {
+        if (matches.length > 10) return;
+        if (l.feature && l.feature.properties) {
+            const props = l.feature.properties;
+
+            // 1. Identificar nombre principal para mostrar
+            const primaryName = props.name || props.nombre || props.id || "Elemento sin nombre";
+
+            // 2. Buscar coincidencias en TODOS los valores
+            let foundMatch = false;
+            let matchContext = "";
+
+            for (const [key, val] of Object.entries(props)) {
+                if (val && normalize(val).includes(q)) {
+                    foundMatch = true;
+                    // Si el match NO es el nombre principal, lo guardamos para contexto
+                    if (val !== primaryName) {
+                        matchContext = `${key}: ${val}`;
+                    }
+                    break;
+                }
+            }
+
+            if (foundMatch) {
+                matches.push({ label: primaryName, context: matchContext, layer: l });
+            }
+        }
+    });
+
+    if (matches.length > 0) {
+        let html = '';
+        matches.forEach((m, index) => {
+            // Guardamos referencia al layerId para recuperarlo despues (usando _leaflet_id)
+            html += `<li onclick="zoomToSuggestion('${name}', ${m.layer._leaflet_id})" 
+                         class="px-2 py-1.5 hover:bg-blue-50 cursor-pointer text-slate-600 border-b border-gray-50 last:border-0">
+                        <div class="font-medium truncate"><i class="fa-solid fa-location-dot text-blue-300 mr-1"></i> ${m.label}</div>
+                        ${m.context ? `<div class="text-[10px] text-gray-400 pl-4 truncate">${m.context}</div>` : ''}
+                     </li>`;
+        });
+        listEl.innerHTML = html;
+        listEl.classList.remove('hidden');
+    } else {
+        listEl.classList.add('hidden');
+    }
+}
+
+function zoomToSuggestion(layerName, layerId) {
+    const layerGroup = referenceLayers[layerName];
+    if (!layerGroup) return;
+
+    const targetLayer = layerGroup.getLayer(layerId);
+    if (targetLayer) {
+        // Zoom
+        if (targetLayer.getBounds) map.flyToBounds(targetLayer.getBounds(), { maxZoom: 18 });
+        else map.flyTo(targetLayer.getLatLng(), 18);
+
+        // Highlight
+        targetLayer.openTooltip();
+        const color = layerGroup._customColor;
+        const originalStyle = { color: color, weight: 2 };
+        if (targetLayer.setStyle) {
+            targetLayer.setStyle({ color: '#facc15', weight: 5 });
+            setTimeout(() => targetLayer.setStyle(originalStyle), 3000);
+        }
+
+        // Limpiar sugerencias
+        const listId = `suggestions-${layerName.replace(/\s+/g, '-')}`;
+        const listEl = document.getElementById(listId);
+        if (listEl) {
+            listEl.classList.add('hidden');
+            listEl.innerHTML = '';
+        }
     }
 }
 
